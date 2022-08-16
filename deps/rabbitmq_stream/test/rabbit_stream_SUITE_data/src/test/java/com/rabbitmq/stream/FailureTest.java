@@ -11,7 +11,7 @@
 // The Original Code is RabbitMQ.
 //
 // The Initial Developer of the Original Code is Pivotal Software, Inc.
-// Copyright (c) 2020-2021 VMware, Inc. or its affiliates.  All rights reserved.
+// Copyright (c) 2020-2022 VMware, Inc. or its affiliates.  All rights reserved.
 //
 
 package com.rabbitmq.stream;
@@ -164,7 +164,7 @@ public class FailureTest {
             new Client.ClientParameters()
                 .port(TestUtils.streamPortNode1())
                 .messageListener(
-                    (subscriptionId, offset, chunkTimestamp, msg) -> {
+                    (subscriptionId, offset, chunkTimestamp, committedChunkId, msg) -> {
                       bodies.add(new String(msg.getBodyAsBinary(), StandardCharsets.UTF_8));
                       consumeLatch.countDown();
                     }));
@@ -345,7 +345,7 @@ public class FailureTest {
                     (client1, subscriptionId, offset, messageCount, dataSize) ->
                         client1.credit(subscriptionId, 1))
                 .messageListener(
-                    (subscriptionId, offset, chunkTimestamp, message) -> {
+                    (subscriptionId, offset, chunkTimestamp, committedChunkId, message) -> {
                       consumed.add(message);
                       generations.add((Long) message.getApplicationProperties().get("generation"));
                       if (consumed.size() == confirmed.size()) {
@@ -447,7 +447,7 @@ public class FailureTest {
     Set<Long> generations = ConcurrentHashMap.newKeySet();
     Set<Long> consumedIds = ConcurrentHashMap.newKeySet();
     Client.MessageListener messageListener =
-        (subscriptionId, offset, chunkTimestamp, message) -> {
+        (subscriptionId, offset, chunkTimestamp, committedChunkId, message) -> {
           consumed.add(message);
           generations.add((Long) message.getApplicationProperties().get("generation"));
           consumedIds.add(message.getProperties().getMessageIdAsLong());

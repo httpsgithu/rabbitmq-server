@@ -2,7 +2,7 @@
 %% License, v. 2.0. If a copy of the MPL was not distributed with this
 %% file, You can obtain one at https://mozilla.org/MPL/2.0/.
 %%
-%% Copyright (c) 2016-2021 VMware, Inc. or its affiliates.  All rights reserved.
+%% Copyright (c) 2016-2022 VMware, Inc. or its affiliates.  All rights reserved.
 %%
 
 -module(rabbit_mgmt_http_health_checks_SUITE).
@@ -65,24 +65,10 @@ init_per_group(Group, Config0) ->
                 {rmq_nodes_count, ClusterSize},
                 {tcp_ports_base}],
     Config2 = rabbit_ct_helpers:set_config(Config1, NodeConf),
-    Ret = rabbit_ct_helpers:run_setup_steps(
-            Config2,
-            rabbit_ct_broker_helpers:setup_steps() ++
-            rabbit_ct_client_helpers:setup_steps()),
-    case Ret of
-        {skip, _} ->
-            Ret;
-        Config3 ->
-            EnableFF = rabbit_ct_broker_helpers:enable_feature_flag(
-                         Config3, quorum_queue),
-            case EnableFF of
-                ok ->
-                    Config3;
-                Skip ->
-                    end_per_group(Group, Config3),
-                    Skip
-            end
-    end.
+    rabbit_ct_helpers:run_setup_steps(
+      Config2,
+      rabbit_ct_broker_helpers:setup_steps() ++
+      rabbit_ct_client_helpers:setup_steps()).
 
 end_per_group(_, Config) ->
     inets:stop(),

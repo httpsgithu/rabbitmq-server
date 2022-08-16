@@ -2,7 +2,7 @@
 %% License, v. 2.0. If a copy of the MPL was not distributed with this
 %% file, You can obtain one at https://mozilla.org/MPL/2.0/.
 %%
-%% Copyright (c) 2020-2021 VMware, Inc. or its affiliates.  All rights reserved.
+%% Copyright (c) 2020-2022 VMware, Inc. or its affiliates.  All rights reserved.
 %%
 
 -module(upgrade_preparation_SUITE).
@@ -62,10 +62,7 @@ end_per_group(_Group, Config) ->
 
 init_per_testcase(TestCase, Config) ->
     rabbit_ct_helpers:testcase_started(Config, TestCase),
-    case rabbit_ct_broker_helpers:enable_feature_flag(Config, quorum_queue) of
-        ok   -> Config;
-        Skip -> Skip
-    end.
+    Config.
 
 end_per_testcase(TestCase, Config) ->
     rabbit_ct_helpers:testcase_finished(Config, TestCase).

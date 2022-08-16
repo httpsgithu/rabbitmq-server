@@ -2,7 +2,7 @@
 %% License, v. 2.0. If a copy of the MPL was not distributed with this
 %% file, You can obtain one at https://mozilla.org/MPL/2.0/.
 %%
-%% Copyright (c) 2007-2021 VMware, Inc. or its affiliates.  All rights reserved.
+%% Copyright (c) 2007-2022 VMware, Inc. or its affiliates.  All rights reserved.
 %%
 
 -module(rabbit_sup).
@@ -105,5 +105,6 @@ init([]) -> {ok, {{one_for_all, 0, 1}, []}}.
 
 %%----------------------------------------------------------------------------
 
-child_reply({ok, _}) -> ok;
-child_reply(X)       -> X.
+child_reply({ok, _, _}) -> ok;
+child_reply({ok, _})    -> ok;
+child_reply(X)          -> X.

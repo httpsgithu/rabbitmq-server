@@ -2,7 +2,7 @@
 %% License, v. 2.0. If a copy of the MPL was not distributed with this
 %% file, You can obtain one at https://mozilla.org/MPL/2.0/.
 %%
-%% Copyright (c) 2007-2021 VMware, Inc. or its affiliates.  All rights reserved.
+%% Copyright (c) 2007-2022 VMware, Inc. or its affiliates.  All rights reserved.
 %%
 
 -module(rabbit_prometheus_http_SUITE).
@@ -169,7 +169,6 @@ init_per_group(aggregated_metrics, Config0) ->
         [{rabbit, [{collect_statistics, coarse}, {collect_statistics_interval, 100}]}]
     ),
     Config2 = init_per_group(aggregated_metrics, Config1, []),
-    ok = rabbit_ct_broker_helpers:enable_feature_flag(Config2, quorum_queue),
 
     A = rabbit_ct_broker_helpers:get_node_config(Config2, 0, nodename),
     Ch = rabbit_ct_client_helpers:open_channel(Config2, A),

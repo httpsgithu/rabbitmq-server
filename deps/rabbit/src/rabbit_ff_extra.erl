@@ -2,7 +2,7 @@
 %% License, v. 2.0. If a copy of the MPL was not distributed with this
 %% file, You can obtain one at https://mozilla.org/MPL/2.0/.
 %%
-%% @copyright 2018-2021 VMware, Inc. or its affiliates.
+%% @copyright 2018-2022 VMware, Inc. or its affiliates.
 %%
 %% @doc
 %% This module provides extra functions unused by the feature flags
@@ -80,7 +80,8 @@ cli_info(FeatureFlags) ->
 %% @param Options Options to tune what is displayed and how.
 
 info(Options) ->
-    %% Two tables: one for stable feature flags, one for experimental ones.
+    %% Two tables: one for stable/required feature flags, one for
+    %% experimental ones.
     StableFF = rabbit_feature_flags:list(all, stable),
     case maps:size(StableFF) of
         0 ->

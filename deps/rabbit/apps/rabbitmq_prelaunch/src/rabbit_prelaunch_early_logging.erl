@@ -2,7 +2,7 @@
 %% License, v. 2.0. If a copy of the MPL was not distributed with this
 %% file, You can obtain one at https://mozilla.org/MPL/2.0/.
 %%
-%% Copyright (c) 2019-2021 VMware, Inc. or its affiliates.  All rights reserved.
+%% Copyright (c) 2019-2022 VMware, Inc. or its affiliates.  All rights reserved.
 %%
 
 -module(rabbit_prelaunch_early_logging).
@@ -23,6 +23,7 @@
          translate_formatter_conf/2,
          translate_journald_fields_conf/2]).
 -export([filter_log_event/2]).
+-export([filter_discarded_message/2]).
 
 -ifdef(TEST).
 -export([levels/0,
@@ -51,7 +52,7 @@ is_configured() ->
     persistent_term:get(?CONFIGURED_KEY, false).
 
 add_rmqlog_filter(LogLevels) ->
-    add_erlang_specific_filters(LogLevels),
+    ok = add_primary_filters(),
     FilterConfig0 = lists:foldl(
                       fun
                           ({_, V}, FC) when is_boolean(V) -> FC;
@@ -67,10 +68,23 @@ add_rmqlog_filter(LogLevels) ->
     ok = logger:set_primary_config(level, all),
     ok = persistent_term:put(?CONFIGURED_KEY, true).
 
-add_erlang_specific_filters(_) ->
-    _ = logger:add_handler_filter(
-          default, progress_reports, {fun logger_filters:progress/2, stop}),
-    ok.
+add_primary_filters() ->
+    ok = logger:add_primary_filter(
+          progress_reports, {fun logger_filters:progress/2, stop}),
+    ok = logger:add_primary_filter(
+          discarded_messages, {fun filter_discarded_message/2, stop}).
+
+filter_discarded_message(#{level := error,
+                           meta := #{error_logger := #{emulator := true, tag := error}},
+                           msg := {"~s~n", Msg}}, OnMatch) ->
+    case string:find(Msg, "Discarding message") of
+        nomatch ->
+            ignore;
+        _ ->
+            OnMatch
+    end;
+filter_discarded_message(_LogEvent, _OnMatch) ->
+    ignore.
 
 filter_log_event(
   #{meta := #{domain := ?RMQLOG_DOMAIN_GLOBAL}} = LogEvent,

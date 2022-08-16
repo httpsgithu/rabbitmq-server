@@ -122,7 +122,10 @@ define PROJECT_ENV
 	    %% interval at which connection/channel tracking executes post operations
 	    {tracking_execution_timeout, 15000},
 	    {stream_messages_soft_limit, 256},
-        {track_auth_attempt_source, false}
+      {track_auth_attempt_source, false},
+			{credentials_obfuscation_fallback_secret, <<"nocookie">>},
+      {dead_letter_worker_consumer_prefetch, 32},
+      {dead_letter_worker_publisher_confirm_timeout, 180000}
 	  ]
 endef
 
@@ -136,7 +139,7 @@ APPS_DIR := $(CURDIR)/apps
 LOCAL_DEPS = sasl rabbitmq_prelaunch os_mon inets compiler public_key crypto ssl syntax_tools xmerl
 
 BUILD_DEPS = rabbitmq_cli
-DEPS = ranch rabbit_common ra sysmon_handler stdout_formatter recon observer_cli osiris amqp10_common syslog systemd seshat
+DEPS = ranch rabbit_common ra sysmon_handler stdout_formatter recon redbug observer_cli osiris amqp10_common syslog systemd seshat
 TEST_DEPS = rabbitmq_ct_helpers rabbitmq_ct_client_helpers amqp_client meck proper
 
 PLT_APPS += mnesia
@@ -144,7 +147,7 @@ PLT_APPS += mnesia
 dep_syslog = git https://github.com/schlagert/syslog 4.0.0
 dep_osiris = git https://github.com/rabbitmq/osiris main
 dep_systemd = hex 0.6.1
-dep_seshat = git https://github.com/rabbitmq/seshat main
+dep_seshat = hex 0.3.2
 
 define usage_xml_to_erl
 $(subst __,_,$(patsubst $(DOCS_DIR)/rabbitmq%.1.xml, src/rabbit_%_usage.erl, $(subst -,_,$(1))))
@@ -160,12 +163,6 @@ DEP_PLUGINS = rabbit_common/mk/rabbitmq-build.mk \
 	      rabbit_common/mk/rabbitmq-run.mk \
 	      rabbit_common/mk/rabbitmq-test.mk \
 	      rabbit_common/mk/rabbitmq-tools.mk
-
-# FIXME: Use erlang.mk patched for RabbitMQ, while waiting for PRs to be
-# reviewed and merged.
-
-ERLANG_MK_REPO = https://github.com/rabbitmq/erlang.mk.git
-ERLANG_MK_COMMIT = rabbitmq-tmp
 
 include ../../rabbitmq-components.mk
 include ../../erlang.mk

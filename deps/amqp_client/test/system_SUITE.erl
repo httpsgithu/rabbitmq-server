@@ -2,7 +2,7 @@
 %% License, v. 2.0. If a copy of the MPL was not distributed with this
 %% file, You can obtain one at https://mozilla.org/MPL/2.0/.
 %%
-%% Copyright (c) 2016-2021 VMware, Inc. or its affiliates.  All rights reserved.
+%% Copyright (c) 2016-2022 VMware, Inc. or its affiliates.  All rights reserved.
 %%
 
 -module(system_SUITE).
@@ -1486,8 +1486,8 @@ command_invalid_over_channel(Config) ->
 %% command_invalid - this only applies to the network case
 command_invalid_over_channel0(Config) ->
     {ok, Connection} = new_connection(Config),
-    gen_server:cast(Connection, {method, #'basic.ack'{}, none, noflow}),
     MonitorRef = erlang:monitor(process, Connection),
+    gen_server:cast(Connection, {method, #'basic.ack'{}, none, noflow}),
     assert_down_with_error(MonitorRef, command_invalid).
 
 %% -------------------------------------------------------------------

@@ -2,7 +2,7 @@
 %% License, v. 2.0. If a copy of the MPL was not distributed with this
 %% file, You can obtain one at https://mozilla.org/MPL/2.0/.
 %%
-%% Copyright (c) 2007-2021 VMware, Inc. or its affiliates.  All rights reserved.
+%% Copyright (c) 2007-2022 VMware, Inc. or its affiliates.  All rights reserved.
 %%
 
 -module(rabbit_nodes_common).
@@ -10,6 +10,7 @@
 -define(EPMD_OPERATION_TIMEOUT, 6000).
 -define(NAME_LOOKUP_ATTEMPTS, 10).
 -define(TCP_DIAGNOSTIC_TIMEOUT, 5000).
+-define(NXDOMAIN_RETRY_WAIT, 5000).
 -define(ERROR_LOGGER_HANDLER, rabbit_error_logger_handler).
 
 -include_lib("kernel/include/inet.hrl").
@@ -55,6 +56,9 @@ names(Hostname, RetriesLeft) ->
   case catch epmd_names(Hostname) of
     {ok, R } -> {ok, R};
     noport ->
+      names(Hostname, RetriesLeft - 1);
+    {error, nxdomain} ->
+      timer:sleep(?NXDOMAIN_RETRY_WAIT),
       names(Hostname, RetriesLeft - 1);
     {error, _} ->
       names(Hostname, RetriesLeft - 1)

@@ -2,7 +2,7 @@
 %% License, v. 2.0. If a copy of the MPL was not distributed with this
 %% file, You can obtain one at https://mozilla.org/MPL/2.0/.
 %%
-%% Copyright (c) 2007-2021 VMware, Inc. or its affiliates.  All rights reserved.
+%% Copyright (c) 2007-2022 VMware, Inc. or its affiliates.  All rights reserved.
 %%
 
 -module(rabbit_mgmt_wm_connection).
@@ -37,11 +37,13 @@ resource_exists(ReqData, Context) ->
 to_json(ReqData, Context) ->
     case rabbit_mgmt_util:disable_stats(ReqData) of
         false ->
-            rabbit_mgmt_util:reply(
-              maps:from_list(rabbit_mgmt_format:strip_pids(conn_stats(ReqData))), ReqData, Context);
+            ConnStats = conn_stats(ReqData),
+            ConnStatsWithoutPids = rabbit_mgmt_format:strip_pids(ConnStats),
+            ReplyData = maps:from_list(ConnStatsWithoutPids),
+            rabbit_mgmt_util:reply(ReplyData, ReqData, Context);
         true ->
-            rabbit_mgmt_util:reply([{name, rabbit_mgmt_util:id(connection, ReqData)}],
-                                   ReqData, Context)
+            ReplyData = [{name, rabbit_mgmt_util:id(connection, ReqData)}],
+            rabbit_mgmt_util:reply(ReplyData, ReqData, Context)
     end.
 
 delete_resource(ReqData, Context) ->

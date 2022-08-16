@@ -2,7 +2,7 @@
 %% License, v. 2.0. If a copy of the MPL was not distributed with this
 %% file, You can obtain one at https://mozilla.org/MPL/2.0/.
 %%
-%% Copyright (c) 2007-2021 VMware, Inc. or its affiliates.  All rights reserved.
+%% Copyright (c) 2007-2022 VMware, Inc. or its affiliates.  All rights reserved.
 %%
 
 -module(rabbit_tracing_consumer).
@@ -147,8 +147,7 @@ delivery_to_log_record({#'basic.deliver'{routing_key = Key},
     {longstr, VHost}  = table_lookup(H, <<"vhost">>),
     {longstr, User}   = table_lookup(H, <<"user">>),
     {signedint, Chan} = table_lookup(H, <<"channel">>),
-    #log_record{timestamp    = rabbit_mgmt_format:now_to_str_ms(
-                                 os:system_time(milli_seconds)),
+    #log_record{timestamp    = rabbit_mgmt_format:now_to_str(),
                 type         = Type,
                 exchange     = X,
                 queue        = Q,

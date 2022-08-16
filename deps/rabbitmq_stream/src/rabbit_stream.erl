@@ -11,7 +11,7 @@
 %% The Original Code is RabbitMQ.
 %%
 %% The Initial Developer of the Original Code is Pivotal Software, Inc.
-%% Copyright (c) 2020-2021 VMware, Inc. or its affiliates.  All rights reserved.
+%% Copyright (c) 2020-2022 VMware, Inc. or its affiliates.  All rights reserved.
 %%
 
 -module(rabbit_stream).
@@ -39,8 +39,7 @@
 -include("rabbit_stream_metrics.hrl").
 
 start(_Type, _Args) ->
-    FeatureFlagsEnabled = rabbit_ff_registry:list(enabled),
-    case maps:is_key(stream_queue, FeatureFlagsEnabled) of
+    case rabbit_feature_flags:is_enabled(stream_queue) of
         true ->
             rabbit_stream_metrics:init(),
             rabbit_global_counters:init([{protocol, stream}],

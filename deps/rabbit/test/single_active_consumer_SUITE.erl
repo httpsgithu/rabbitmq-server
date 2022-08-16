@@ -2,7 +2,7 @@
 %% License, v. 2.0. If a copy of the MPL was not distributed with this
 %% file, You can obtain one at https://mozilla.org/MPL/2.0/.
 %%
-%% Copyright (c) 2018-2021 VMware, Inc. or its affiliates.  All rights reserved.
+%% Copyright (c) 2018-2022 VMware, Inc. or its affiliates.  All rights reserved.
 %%
 
 -module(single_active_consumer_SUITE).
@@ -64,21 +64,14 @@ init_per_group(classic_queue, Config) ->
             auto_delete = true}
         } | Config];
 init_per_group(quorum_queue, Config) ->
-    Ret = rabbit_ct_broker_helpers:rpc(
-            Config, 0, rabbit_feature_flags, enable, [quorum_queue]),
-    case Ret of
-        ok ->
-            [{single_active_consumer_queue_declare,
-              #'queue.declare'{
-                 arguments = [
-                              {<<"x-single-active-consumer">>, bool, true},
-                              {<<"x-queue-type">>, longstr, <<"quorum">>}
-                             ],
-                 durable = true, exclusive = false, auto_delete = false}
-             } | Config];
-        Error ->
-            {skip, {"Quorum queues are unsupported", Error}}
-    end.
+    [{single_active_consumer_queue_declare,
+      #'queue.declare'{
+         arguments = [
+                      {<<"x-single-active-consumer">>, bool, true},
+                      {<<"x-queue-type">>, longstr, <<"quorum">>}
+                     ],
+         durable = true, exclusive = false, auto_delete = false}
+     } | Config].
 
 end_per_group(_, Config) ->
     Config.

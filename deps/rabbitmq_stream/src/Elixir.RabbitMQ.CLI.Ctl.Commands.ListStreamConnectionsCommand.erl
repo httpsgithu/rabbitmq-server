@@ -11,20 +11,13 @@
 %% The Original Code is RabbitMQ.
 %%
 %% The Initial Developer of the Original Code is GoPivotal, Inc.
-%% Copyright (c) 2020-2021 VMware, Inc. or its affiliates.  All rights reserved.
+%% Copyright (c) 2020-2022 VMware, Inc. or its affiliates.  All rights reserved.
 
 -module('Elixir.RabbitMQ.CLI.Ctl.Commands.ListStreamConnectionsCommand').
 
 -include_lib("rabbitmq_stream_common/include/rabbit_stream.hrl").
 
 -behaviour('Elixir.RabbitMQ.CLI.CommandBehaviour').
-
--ignore_xref([{'Elixir.RabbitMQ.CLI.DefaultOutput', output, 1},
-              {'Elixir.RabbitMQ.CLI.Core.Helpers', nodes_in_cluster, 1},
-              {'Elixir.RabbitMQ.CLI.Ctl.InfoKeys', prepare_info_keys, 1},
-              {'Elixir.RabbitMQ.CLI.Ctl.RpcStream', receive_list_items, 7},
-              {'Elixir.RabbitMQ.CLI.Ctl.InfoKeys', validate_info_keys, 2},
-              {'Elixir.Enum', join, 2}]).
 
 -export([formatter/0,
          scopes/0,

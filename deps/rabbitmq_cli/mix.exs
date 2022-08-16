@@ -11,7 +11,7 @@ defmodule RabbitMQCtl.MixfileBase do
     [
       app: :rabbitmqctl,
       version: "3.8.0-dev",
-      elixir: ">= 1.10.4 and < 1.13.0",
+      elixir: ">= 1.10.4 and < 1.14.0",
       build_embedded: Mix.env == :prod,
       start_permanent: Mix.env == :prod,
       escript: [main_module: RabbitMQCtl,
@@ -122,7 +122,7 @@ defmodule RabbitMQCtl.MixfileBase do
       {:json, "~> 1.4.1"},
       {:csv, "~> 2.4.0"},
       {:stdout_formatter, "~> 0.2.3"},
-      {:observer_cli, "~> 1.7.1"},
+      {:observer_cli, "~> 1.7.3"},
 
       {:amqp, "~> 2.1.0", only: :test},
       {:dialyxir, "~> 0.5", only: :test, runtime: false},
@@ -149,19 +149,20 @@ defmodule RabbitMQCtl.MixfileBase do
           end
         end
 
-        # We disable compilation for rabbit_common and amqp_client
-        # because Erlang.mk already built them.
+        make_cmd = System.get_env("MAKE", "make")
+        is_bazel = System.get_env("IS_BAZEL") != nil
+
         [
           {
             :rabbit_common,
             path: Path.join(deps_dir, "rabbit_common"),
-            compile: false,
+            compile: (if is_bazel, do: false, else: make_cmd),
             override: true
           },
           {
             :amqp_client,
             path: Path.join(deps_dir, "amqp_client"),
-            compile: false,
+            compile: (if is_bazel, do: false, else: make_cmd),
             override: true,
             only: :test
           },

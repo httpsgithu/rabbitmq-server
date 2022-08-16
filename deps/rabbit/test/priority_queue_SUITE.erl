@@ -2,7 +2,7 @@
 %% License, v. 2.0. If a copy of the MPL was not distributed with this
 %% file, You can obtain one at https://mozilla.org/MPL/2.0/.
 %%
-%% Copyright (c) 2007-2021 VMware, Inc. or its affiliates.  All rights reserved.
+%% Copyright (c) 2007-2022 VMware, Inc. or its affiliates.  All rights reserved.
 %%
 
 -module(priority_queue_SUITE).
@@ -27,6 +27,7 @@ groups() ->
                          {overflow_reject_publish_dlx, [], [reject]},
                          dropwhile_fetchwhile,
                          info_head_message_timestamp,
+                         unknown_info_key,
                          matching,
                          purge,
                          requeue,
@@ -359,7 +360,7 @@ info_head_message_timestamp1(_Config) ->
     '' = PQ:info(head_message_timestamp, BQS1),
     %% Publish one message with timestamp 1000.
     Msg1 = #basic_message{
-      id = msg1,
+      id = <<"msg1">>,
       content = #content{
         properties = #'P_basic'{
           priority = 1,
@@ -372,7 +373,7 @@ info_head_message_timestamp1(_Config) ->
     1000 = PQ:info(head_message_timestamp, BQS2),
     %% Publish a higher priority message with no timestamp.
     Msg2 = #basic_message{
-      id = msg2,
+      id = <<"msg2">>,
       content = #content{
         properties = #'P_basic'{
           priority = 2
@@ -391,10 +392,23 @@ info_head_message_timestamp1(_Config) ->
     {{Msg1, _, AckTag}, BQS5} = PQ:fetch(true, BQS4),
     1000 = PQ:info(head_message_timestamp, BQS5),
     %% Ack message. The queue is empty now.
-    {[msg1], BQS6} = PQ:ack([AckTag], BQS5),
+    {[<<"msg1">>], BQS6} = PQ:ack([AckTag], BQS5),
     true = PQ:is_empty(BQS6),
     '' = PQ:info(head_message_timestamp, BQS6),
     PQ:delete_and_terminate(a_whim, BQS6),
+    passed.
+
+unknown_info_key(Config) ->
+    {Conn, Ch} = rabbit_ct_client_helpers:open_connection_and_channel(Config, 0),
+    Q = <<"info-priority-queue">>,
+    declare(Ch, Q, 3),
+    publish(Ch, Q, [1, 2, 3]),
+    
+    {ok, [{pid, _Pid}, {unknown_key, ''}]} = info(Config, Q, [pid, unknown_key]),
+
+    delete(Ch, Q),
+    rabbit_ct_client_helpers:close_channel(Ch),
+    rabbit_ct_client_helpers:close_connection(Conn),
     passed.
 
 ram_duration(_Config) ->
@@ -518,4 +532,13 @@ queue_pid(Config, Nodename, Q) ->
     [Pid] = [P || [{name, Q1}, {pid, P}] <- Info, Q =:= Q1],
     Pid.
 
+info(Config, Q, InfoKeys) -> 
+    Nodename = rabbit_ct_broker_helpers:get_node_config(Config, 0, nodename),
+    {ok, Amq} = rabbit_ct_broker_helpers:rpc(
+            Config, Nodename,
+            rabbit_amqqueue, lookup, [rabbit_misc:r(<<"/">>, queue, Q)]),
+    Info = rabbit_ct_broker_helpers:rpc(
+             Config, Nodename,
+             rabbit_classic_queue, info, [Amq, InfoKeys]),
+    {ok, Info}.
 %%----------------------------------------------------------------------------

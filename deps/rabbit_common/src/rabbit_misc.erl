@@ -2,7 +2,7 @@
 %% License, v. 2.0. If a copy of the MPL was not distributed with this
 %% file, You can obtain one at https://mozilla.org/MPL/2.0/.
 %%
-%% Copyright (c) 2007-2021 VMware, Inc. or its affiliates.  All rights reserved.
+%% Copyright (c) 2007-2022 VMware, Inc. or its affiliates.  All rights reserved.
 %%
 
 -module(rabbit_misc).
@@ -12,6 +12,8 @@
 -include("rabbit.hrl").
 -include("rabbit_framing.hrl").
 -include("rabbit_misc.hrl").
+
+-include_lib("kernel/include/file.hrl").
 
 -ifdef(TEST).
 -export([decompose_pid/1, compose_pid/4]).
@@ -44,11 +46,13 @@
 -export([atom_to_binary/1, parse_bool/1, parse_int/1]).
 -export([pid_to_string/1, string_to_pid/1,
          pid_change_node/2, node_to_fake_pid/1]).
+-export([hexify/1]).
 -export([version_compare/2, version_compare/3]).
 -export([version_minor_equivalent/2, strict_version_minor_equivalent/2]).
 -export([dict_cons/3, orddict_cons/3, maps_cons/3, gb_trees_cons/3]).
 -export([gb_trees_fold/3, gb_trees_foreach/2]).
 -export([all_module_attributes/1,
+         rabbitmq_related_apps/0,
          rabbitmq_related_module_attributes/1,
          module_attributes_from_apps/2,
          build_acyclic_graph/3]).
@@ -78,6 +82,8 @@
 -export([rpc_call/4, rpc_call/5]).
 -export([get_gc_info/1]).
 -export([group_proplists_by/2]).
+-export([raw_read_file/1]).
+-export([is_regular_file/1]).
 
 %% Horrible macro to use in guards
 -define(IS_BENIGN_EXIT(R),
@@ -772,6 +778,14 @@ pid_to_string(Pid) when is_pid(Pid) ->
     {Node, Cre, Id, Ser} = decompose_pid(Pid),
     format("<~s.~B.~B.~B>", [Node, Cre, Id, Ser]).
 
+-spec hexify(binary() | atom() | list()) -> binary().
+hexify(Bin) when is_binary(Bin) ->
+    iolist_to_binary([io_lib:format("~2.16.0B", [V]) || <<V:8>> <= Bin]);
+hexify(Bin) when is_list(Bin) ->
+    hexify(erlang:binary_to_list(Bin));
+hexify(Bin) when is_atom(Bin) ->
+    hexify(erlang:atom_to_binary(Bin)).
+
 %% inverse of above
 string_to_pid(Str) ->
     Err = {error, {invalid_pid_syntax, Str}},
@@ -1166,7 +1180,7 @@ is_os_process_alive(Pid) ->
                                  false ->
                                      Cmd =
                                      format(
-                                       "PowerShell -Command "
+                                       "powershell.exe -NoLogo -NoProfile -NonInteractive -Command "
                                        "\"(Get-Process -Id ~s).ProcessName\"",
                                        [PidS]),
                                      Res =
@@ -1218,7 +1232,7 @@ version() ->
 otp_release() ->
     File = filename:join([code:root_dir(), "releases",
                           erlang:system_info(otp_release), "OTP_VERSION"]),
-    case file:read_file(File) of
+    case raw_read_file(File) of
         {ok, VerBin} ->
             %% 17.0 or later, we need the file for the minor version
             string:strip(binary_to_list(VerBin), both, $\n);
@@ -1252,8 +1266,14 @@ sequence_error([T])                      -> T;
 sequence_error([{error, _} = Error | _]) -> Error;
 sequence_error([_ | Rest])               -> sequence_error(Rest).
 
-check_expiry(N) when N < 0                 -> {error, {value_negative, N}};
-check_expiry(_N)                           -> ok.
+check_expiry(N)
+  when N < 0 ->
+    {error, {value_negative, N}};
+check_expiry(N)
+  when N > 315_360_000_000 -> %% 10 years in milliseconds
+    {error, {value_too_large, N}};
+check_expiry(_N) ->
+    ok.
 
 base64url(In) ->
     lists:reverse(lists:foldl(fun ($\+, Acc) -> [$\- | Acc];
@@ -1398,6 +1418,35 @@ rpc_call(Node, Mod, Fun, Args, Timeout) ->
 
 get_gc_info(Pid) ->
     rabbit_runtime:get_gc_info(Pid).
+
+-spec raw_read_file(Filename) -> {ok, Binary} | {error, Reason} when
+      Filename :: file:name_all(),
+      Binary :: binary(),
+      Reason :: file:posix() | badarg | terminated | system_limit.
+raw_read_file(File) ->
+    try
+        % Note: this works around the win32 file leak in file:read_file/1
+        % https://github.com/erlang/otp/issues/5527
+        {ok, FInfo} = file:read_file_info(File, [raw]),
+        {ok, Fd} = file:open(File, [read, raw, binary]),
+        try
+            file:read(Fd, FInfo#file_info.size)
+        after
+            file:close(Fd)
+        end
+    catch
+        error:{badmatch, Error} -> Error
+    end.
+
+-spec is_regular_file(Name) -> boolean() when
+      Name :: file:filename_all().
+is_regular_file(Name) ->
+    % Note: this works around the win32 file leak in file:read_file/1
+    % https://github.com/erlang/otp/issues/5527
+    case file:read_file_info(Name, [raw]) of
+        {ok, #file_info{type=regular}} -> true;
+        _ -> false
+    end.
 
 %% -------------------------------------------------------------------------
 %% Begin copypasta from gen_server2.erl

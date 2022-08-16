@@ -2,7 +2,7 @@
 %% License, v. 2.0. If a copy of the MPL was not distributed with this
 %% file, You can obtain one at https://mozilla.org/MPL/2.0/.
 %%
-%% Copyright (c) 2010-2021 VMware, Inc. or its affiliates.  All rights reserved.
+%% Copyright (c) 2010-2022 VMware, Inc. or its affiliates.  All rights reserved.
 %%
 
 -module(rabbit_mirror_queue_misc).
@@ -16,7 +16,8 @@
          is_mirrored/1, is_mirrored_ha_nodes/1,
          update_mirrors/2, update_mirrors/1, validate_policy/1,
          maybe_auto_sync/1, maybe_drop_master_after_sync/1,
-         sync_batch_size/1, log_info/3, log_warning/3]).
+         sync_batch_size/1, default_max_sync_throughput/0,
+         log_info/3, log_warning/3]).
 -export([stop_all_slaves/5]).
 
 -export([sync_queue/1, cancel_sync_queue/1, queue_length/1]).
@@ -506,6 +507,25 @@ default_batch_size() ->
     rabbit_misc:get_env(rabbit, mirroring_sync_batch_size,
                         ?DEFAULT_BATCH_SIZE).
 
+-define(DEFAULT_MAX_SYNC_THROUGHPUT, 0).
+
+default_max_sync_throughput() ->
+  case application:get_env(rabbit, mirroring_sync_max_throughput) of
+    {ok, Value} ->
+      case rabbit_resource_monitor_misc:parse_information_unit(Value) of
+        {ok, ParsedThroughput} ->
+          ParsedThroughput;
+        {error, parse_error} ->
+          rabbit_log:warning(
+            "The configured value for the mirroring_sync_max_throughput is "
+            "not a valid value: ~p. Disabled sync throughput control. ",
+            [Value]),
+          ?DEFAULT_MAX_SYNC_THROUGHPUT
+      end;
+    undefined ->
+      ?DEFAULT_MAX_SYNC_THROUGHPUT
+  end.
+
 -spec update_mirrors
         (amqqueue:amqqueue(), amqqueue:amqqueue()) -> 'ok'.
 
@@ -582,6 +602,8 @@ transfer_leadership(Q, Destination) ->
 %% Moves the primary replica (leader) of a classic mirrored queue to another node
 %% which already hosts a replica of this queue. In this case we can stop
 %% fewer replicas and reduce the load the operation has on the cluster.
+%% Note that there is no guarantee that the queue will actually end up on the
+%% destination node. The actual destination node is returned.
 migrate_leadership_to_existing_replica(Q, Destination) ->
     QName = amqqueue:get_name(Q),
     {PreTransferPrimaryNode, PreTransferMirrorNodes, _PreTransferInSyncMirrorNodes} = actual_queue_nodes(Q),
@@ -596,7 +618,7 @@ migrate_leadership_to_existing_replica(Q, Destination) ->
     NodesToDropMirrorsOn = [PreTransferPrimaryNode],
     drop_mirrors(QName, NodesToDropMirrorsOn),
 
-    case wait_for_new_master(QName, Destination) of
+    case wait_for_different_master(QName, PreTransferPrimaryNode) of
         not_migrated ->
             {not_migrated, undefined};
         {{not_migrated, Destination} = Result, _Q1} ->
@@ -634,6 +656,36 @@ wait_for_new_master(QName, Destination, N) ->
                     end
             end
     end.
+
+-spec wait_for_different_master(rabbit_amqqueue:name(), atom()) -> {{migrated, node()}, amqqueue:amqqueue()} | {{not_migrated, node()}, amqqueue:amqqueue()} | not_migrated.
+wait_for_different_master(QName, Source) ->
+    wait_for_different_master(QName, Source, 100).
+
+wait_for_different_master(QName, _, 0) ->
+    case rabbit_amqqueue:lookup(QName) of
+        {error, not_found} -> not_migrated;
+        {ok, Q}            -> {{not_migrated, undefined}, Q}
+    end;
+wait_for_different_master(QName, Source, N) ->
+    case rabbit_amqqueue:lookup(QName) of
+        {error, not_found} ->
+            not_migrated;
+        {ok, Q} ->
+            case amqqueue:get_pid(Q) of
+                none ->
+                    timer:sleep(100),
+                    wait_for_different_master(QName, Source, N - 1);
+                Pid ->
+                    case node(Pid) of
+                        Source ->
+                            timer:sleep(100),
+                            wait_for_different_master(QName, Source, N - 1);
+                        Destination ->
+                            {{migrated, Destination}, Q}
+                    end
+            end
+    end.
+
 
 %% The arrival of a newly synced mirror may cause the master to die if
 %% the policy does not want the master but it has been kept alive

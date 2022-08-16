@@ -2,15 +2,10 @@
 %% License, v. 2.0. If a copy of the MPL was not distributed with this
 %% file, You can obtain one at https://mozilla.org/MPL/2.0/.
 %%
-%% Copyright (c) 2007-2021 VMware, Inc. or its affiliates.  All rights reserved.
+%% Copyright (c) 2007-2022 VMware, Inc. or its affiliates.  All rights reserved.
 %%
 
 -module(rabbit_reader).
-
-%% Transitional step until we can require Erlang/OTP 21 and
-%% use the now recommended try/catch syntax for obtaining the stack trace.
--compile(nowarn_deprecated_function).
-
 %% This is an AMQP 0-9-1 connection implementation. If AMQP 1.0 plugin is enabled,
 %% this module passes control of incoming AMQP 1.0 connections to it.
 %%
@@ -1341,7 +1336,7 @@ is_over_user_connection_limit(#user{username = Username}) ->
     case rabbit_auth_backend_internal:is_over_connection_limit(Username) of
         false -> ok;
         {true, Limit} -> rabbit_misc:protocol_error(not_allowed,
-                            "Connection refused for user '~s': "
+                            "connection refused for user '~s': "
                             "user connection limit (~p) is reached",
                             [Username, Limit])
     end.
@@ -1770,7 +1765,7 @@ augment_connection_log_name(#connection{name = Name} = Connection) ->
             Connection;
         UserSpecifiedName ->
             LogName = <<Name/binary, " - ", UserSpecifiedName/binary>>,
-            rabbit_log_connection:info("Connection ~p (~s) has a client-provided name: ~s", [self(), Name, UserSpecifiedName]),
+            rabbit_log_connection:info("connection ~p (~s) has a client-provided name: ~s", [self(), Name, UserSpecifiedName]),
             ?store_proc_name(LogName),
             Connection#connection{log_name = LogName}
     end.

@@ -2,7 +2,7 @@
 %% License, v. 2.0. If a copy of the MPL was not distributed with this
 %% file, You can obtain one at https://mozilla.org/MPL/2.0/.
 %%
-%% Copyright (c) 2007-2021 VMware, Inc. or its affiliates.  All rights reserved.
+%% Copyright (c) 2007-2022 VMware, Inc. or its affiliates.  All rights reserved.
 %%
 -module(rabbit_health_check).
 
@@ -64,7 +64,11 @@ node_health_check(rabbit_node_monitor) ->
     end;
 
 node_health_check(alarms) ->
-    case proplists:get_value(alarms, rabbit:status()) of
+    % Note:
+    % Removed call to rabbit:status/0 here due to a memory leak on win32,
+    % plus it uses an excessive amount of resources
+    % Alternative to https://github.com/rabbitmq/rabbitmq-server/pull/3893
+    case rabbit:alarms() of
         [] ->
             ok;
         Alarms ->

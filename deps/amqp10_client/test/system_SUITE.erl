@@ -2,7 +2,7 @@
 %% License, v. 2.0. If a copy of the MPL was not distributed with this
 %% file, You can obtain one at https://mozilla.org/MPL/2.0/.
 %%
-%% Copyright (c) 2017-2021 VMware, Inc. or its affiliates.  All rights reserved.
+%% Copyright (c) 2017-2022 VMware, Inc. or its affiliates.  All rights reserved.
 %%
 
 -module(system_SUITE).
@@ -495,6 +495,7 @@ subscribe(Config) ->
     {ok, Sender} = amqp10_client:attach_sender_link_sync(Session,
                                                          <<"sub-sender">>,
                                                          QueueName),
+    await_link(Sender, credited, link_credit_timeout),
     _ = publish_messages(Sender, <<"banana">>, 10),
     {ok, Receiver} = amqp10_client:attach_receiver_link(Session,
                                                         <<"sub-receiver">>,
@@ -524,6 +525,7 @@ subscribe_with_auto_flow(Config) ->
     {ok, Sender} = amqp10_client:attach_sender_link_sync(Session,
                                                          <<"sub-sender">>,
                                                          QueueName),
+    await_link(Sender, credited, link_credit_timeout),
     _ = publish_messages(Sender, <<"banana">>, 10),
     {ok, Receiver} = amqp10_client:attach_receiver_link(Session,
                                                         <<"sub-receiver">>,

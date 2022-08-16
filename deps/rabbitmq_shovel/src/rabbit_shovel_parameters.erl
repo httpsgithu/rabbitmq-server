@@ -2,7 +2,7 @@
 %% License, v. 2.0. If a copy of the MPL was not distributed with this
 %% file, You can obtain one at https://mozilla.org/MPL/2.0/.
 %%
-%% Copyright (c) 2007-2021 VMware, Inc. or its affiliates.  All rights reserved.
+%% Copyright (c) 2007-2022 VMware, Inc. or its affiliates.  All rights reserved.
 %%
 
 -module(rabbit_shovel_parameters).
@@ -215,9 +215,9 @@ validate_params_user(#amqp_params_network{}, _User) ->
 
 validate_delete_after(_Name, <<"never">>)          -> ok;
 validate_delete_after(_Name, <<"queue-length">>)   -> ok;
-validate_delete_after(_Name, N) when is_integer(N) -> ok;
+validate_delete_after(_Name, N) when is_integer(N), N >= 0 -> ok;
 validate_delete_after(Name,  Term) ->
-    {error, "~s should be number, \"never\" or \"queue-length\", actually was "
+    {error, "~s should be a number greater than or equal to 0, \"never\" or \"queue-length\", actually was "
      "~p", [Name, Term]}.
 
 validate_queue_args(Name, Term0) ->

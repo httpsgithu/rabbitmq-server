@@ -2,7 +2,7 @@
 %% License, v. 2.0. If a copy of the MPL was not distributed with this
 %% file, You can obtain one at https://mozilla.org/MPL/2.0/.
 %%
-%% Copyright (c) 2018-2021 VMware, Inc. or its affiliates.  All rights reserved.
+%% Copyright (c) 2018-2022 VMware, Inc. or its affiliates.  All rights reserved.
 %%
 
 -module(rabbit_maintenance).
@@ -29,11 +29,11 @@
     transfer_leadership_of_quorum_queues/1,
     transfer_leadership_of_classic_mirrored_queues/1,
     status_table_name/0,
-    status_table_definition/0
+    status_table_definition/0,
+    boot/0
 ]).
 
 -define(TABLE, rabbit_node_maintenance_states).
--define(FEATURE_FLAG, maintenance_mode_status).
 -define(DEFAULT_STATUS,  regular).
 -define(DRAINING_STATUS, draining).
 
@@ -43,6 +43,30 @@
 -export_type([
     maintenance_status/0
 ]).
+
+%%
+%% Boot
+%%
+
+-rabbit_boot_step({rabbit_maintenance_mode_state,
+    [{description, "initializes maintenance mode state"},
+        {mfa,         {?MODULE, boot, []}},
+        {requires,    networking}]}).
+
+boot() ->
+    TableName = status_table_name(),
+    rabbit_log:info(
+      "Creating table ~s for maintenance mode status",
+      [TableName]),
+    try
+        _ = rabbit_table:create(
+              TableName,
+              status_table_definition())
+    catch throw:Reason  ->
+              rabbit_log:error(
+                "Failed to create maintenance status table: ~p",
+                [Reason])
+    end.
 
 %%
 %% API
@@ -61,19 +85,10 @@ status_table_definition() ->
 
 -spec is_enabled() -> boolean().
 is_enabled() ->
-    rabbit_feature_flags:is_enabled(?FEATURE_FLAG).
+    true.
 
 -spec drain() -> ok.
 drain() ->
-    case is_enabled() of
-        true  -> do_drain();
-        false ->
-            rabbit_log:error("Feature flag '~s' is not enabled, cannot put this node under maintenance", [?FEATURE_FLAG]),
-            {error, rabbit_misc:format("Feature flag '~s' is not enabled, cannot put this node under maintenance", [?FEATURE_FLAG])}
-    end.
-
--spec do_drain() -> ok.
-do_drain() ->
     rabbit_log:warning("This node is being put into maintenance (drain) mode"),
     mark_as_being_drained(),
     rabbit_log:info("Marked this node as undergoing maintenance"),
@@ -102,15 +117,6 @@ do_drain() ->
 
 -spec revive() -> ok.
 revive() ->
-    case is_enabled() of
-        true  -> do_revive();
-        false ->
-            rabbit_log:error("Feature flag '~s' is not enabled, cannot put this node out of maintenance", [?FEATURE_FLAG]),
-            {error, rabbit_misc:format("Feature flag '~s' is not enabled, cannot put this node out of maintenance", [?FEATURE_FLAG])}
-    end.
-
--spec do_revive() -> ok.
-do_revive() ->
     rabbit_log:info("This node is being revived from maintenance (drain) mode"),
     revive_local_quorum_queue_replicas(),
     rabbit_log:info("Resumed all listeners and will accept client connections again"),
@@ -270,15 +276,15 @@ transfer_leadership_of_classic_mirrored_queues(TransferCandidates) ->
                           [rabbit_misc:rs(Name), readable_candidate_list(ExistingReplicaNodes)]),
          case random_primary_replica_transfer_candidate_node(TransferCandidates, ExistingReplicaNodes) of
              {ok, Pick} ->
-                 rabbit_log:debug("Will transfer leadership of local ~s to node ~s",
+                 rabbit_log:debug("Will transfer leadership of local ~s. Planned target node: ~s",
                           [rabbit_misc:rs(Name), Pick]),
                  case rabbit_mirror_queue_misc:migrate_leadership_to_existing_replica(Q, Pick) of
-                     {migrated, _} ->
+                     {migrated, NewPrimary} ->
                          rabbit_log:debug("Successfully transferred leadership of queue ~s to node ~s",
-                                          [rabbit_misc:rs(Name), Pick]);
+                                          [rabbit_misc:rs(Name), NewPrimary]);
                      Other ->
-                         rabbit_log:warning("Could not transfer leadership of queue ~s to node ~s: ~p",
-                                            [rabbit_misc:rs(Name), Pick, Other])
+                         rabbit_log:warning("Could not transfer leadership of queue ~s: ~p",
+                                            [rabbit_misc:rs(Name), Other])
                  end;
              undefined ->
                  rabbit_log:warning("Could not transfer leadership of queue ~s: no suitable candidates?",

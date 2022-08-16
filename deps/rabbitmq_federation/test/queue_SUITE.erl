@@ -2,7 +2,7 @@
 %% License, v. 2.0. If a copy of the MPL was not distributed with this
 %% file, You can obtain one at https://mozilla.org/MPL/2.0/.
 %%
-%% Copyright (c) 2007-2021 VMware, Inc. or its affiliates.  All rights reserved.
+%% Copyright (c) 2007-2022 VMware, Inc. or its affiliates.  All rights reserved.
 %%
 
 -module(queue_SUITE).
@@ -15,7 +15,7 @@
 
 -import(rabbit_federation_test_util,
         [wait_for_federation/2, expect/3, expect/4,
-         set_upstream/4, set_upstream/5, clear_upstream/3, clear_upstream_set/3,
+         set_upstream/4, set_upstream/5, clear_upstream/3, set_upstream_set/4, clear_upstream_set/3,
          set_policy/5, clear_policy/3,
          set_policy_pattern/5, set_policy_upstream/5, q/2, with_ch/3,
          maybe_declare_queue/3, delete_queue/2,
@@ -33,7 +33,6 @@ all() ->
 
 groups() ->
     ClusterSize1 = [simple,
-                    multiple_upstreams,
                     multiple_upstreams_pattern,
                     multiple_downstreams,
                     message_flow,
@@ -139,23 +138,10 @@ init_per_group1(Group, Config) ->
         {rmq_nodename_suffix, Suffix},
         {rmq_nodes_clustered, false}
       ]),
-    Config2 = rabbit_ct_helpers:run_steps(Config1,
-                                          rabbit_ct_broker_helpers:setup_steps() ++
-                                              rabbit_ct_client_helpers:setup_steps() ++
-                                              SetupFederation ++ Disambiguate),
-    case ?config(target_queue_type, Config2) of
-        quorum ->
-            case rabbit_ct_broker_helpers:enable_feature_flag(Config2, quorum_queue) of
-                ok ->
-                    Config2;
-                {skip, Skip} ->
-                    Skip;
-                Other ->
-                    {skip, Other}
-            end;
-        _ ->
-            Config2
-    end.
+    rabbit_ct_helpers:run_steps(Config1,
+                                rabbit_ct_broker_helpers:setup_steps() ++
+                                rabbit_ct_client_helpers:setup_steps() ++
+                                SetupFederation ++ Disambiguate).
 
 end_per_group(without_disambiguate, Config) ->
     Config;
@@ -187,17 +173,6 @@ simple(Config) ->
       fun (Ch) ->
               expect_federation(Ch, <<"upstream">>, <<"fed.downstream">>)
       end, upstream_downstream(Config)).
-
-multiple_upstreams(Config) ->
-    SourceArgs = ?config(source_queue_args, Config),
-    TargetArgs = ?config(target_queue_args, Config),
-    with_ch(Config,
-      fun (Ch) ->
-              expect_federation(Ch, <<"upstream">>, <<"fed12.downstream">>),
-              expect_federation(Ch, <<"upstream2">>, <<"fed12.downstream">>)
-      end, [q(<<"upstream">>, SourceArgs),
-            q(<<"upstream2">>, SourceArgs),
-            q(<<"fed12.downstream">>, TargetArgs)]).
 
 multiple_upstreams_pattern(Config) ->
     set_upstream(Config, 0, <<"local453x">>,
@@ -408,10 +383,14 @@ expect_empty(Ch, Q) ->
     rabbit_federation_test_util:expect_empty(Ch, Q).
 
 expect_federation(Ch, UpstreamQ, DownstreamQ) ->
-    publish_expect(Ch, <<>>, UpstreamQ, DownstreamQ, <<"HELLO">>).
+    Base = <<"HELLO">>,
+    Payload = <<Base/binary, "-to-", UpstreamQ/binary>>,
+    publish_expect(Ch, <<>>, UpstreamQ, DownstreamQ, Payload).
 
 expect_federation(Ch, UpstreamQ, DownstreamQ, Timeout) ->
-    publish_expect(Ch, <<>>, UpstreamQ, DownstreamQ, <<"HELLO">>, Timeout).
+    Base = <<"HELLO">>,
+    Payload = <<Base/binary, "-to-", UpstreamQ/binary>>,
+    publish_expect(Ch, <<>>, UpstreamQ, DownstreamQ, Payload, Timeout).
 
 expect_no_federation(Ch, UpstreamQ, DownstreamQ) ->
     publish(Ch, <<>>, UpstreamQ, <<"HELLO">>),

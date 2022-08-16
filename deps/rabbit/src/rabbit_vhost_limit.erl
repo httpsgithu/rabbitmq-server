@@ -2,7 +2,7 @@
 %% License, v. 2.0. If a copy of the MPL was not distributed with this
 %% file, You can obtain one at https://mozilla.org/MPL/2.0/.
 %%
-%% Copyright (c) 2007-2021 VMware, Inc. or its affiliates.  All rights reserved.
+%% Copyright (c) 2007-2022 VMware, Inc. or its affiliates.  All rights reserved.
 %%
 
 -module(rabbit_vhost_limit).
@@ -149,7 +149,7 @@ parse_set(VHost, Defn, ActingUser) ->
             set(VHost, maps:to_list(Term), ActingUser);
         {error, Reason} ->
             {error_string,
-                rabbit_misc:format("JSON decoding error. Reason: ~ts", [Reason])}
+                rabbit_misc:format("Could not parse JSON document: ~tp", [Reason])}
     end.
 
 set(VHost, Defn, ActingUser) ->

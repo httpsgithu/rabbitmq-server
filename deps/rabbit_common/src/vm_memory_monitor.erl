@@ -2,7 +2,7 @@
 %% License, v. 2.0. If a copy of the MPL was not distributed with this
 %% file, You can obtain one at https://mozilla.org/MPL/2.0/.
 %%
-%% Copyright (c) 2007-2021 VMware, Inc. or its affiliates.  All rights reserved.
+%% Copyright (c) 2007-2022 VMware, Inc. or its affiliates.  All rights reserved.
 %%
 
 %% In practice Erlang shouldn't be allowed to grow to more than a half
@@ -483,9 +483,17 @@ get_total_memory({unix, darwin}) ->
     sysctl("hw.memsize");
 
 get_total_memory({unix, freebsd}) ->
-    PageSize  = sysctl("vm.stats.vm.v_page_size"),
-    PageCount = sysctl("vm.stats.vm.v_page_count"),
-    PageCount * PageSize;
+    case sysctl("vm.stats.vm.v_page_size") of
+        unknown ->
+            unknown;
+        PageSize ->
+            case sysctl("vm.stats.vm.v_page_count") of
+                unknown ->
+                    unknown;
+                PageCount ->
+                    PageCount * PageSize
+            end
+    end;
 
 get_total_memory({unix, openbsd}) ->
     sysctl("hw.usermem");
@@ -570,7 +578,14 @@ parse_line_aix(Line) ->
      end}.
 
 sysctl(Def) ->
-    list_to_integer(cmd("/usr/bin/env sysctl -n " ++ Def) -- "\n").
+    R = cmd("/usr/bin/env sysctl -n " ++ Def) -- "\n",
+    try
+        list_to_integer(R)
+    catch
+        error:badarg ->
+            rabbit_log:debug("Failed to get total system memory: ~p", [R]),
+            unknown
+    end.
 
 %% file:read_file does not work on files in /proc as it seems to get
 %% the size of the file first and then read that many bytes. But files

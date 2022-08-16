@@ -1,3 +1,10 @@
+%% This Source Code Form is subject to the terms of the Mozilla Public
+%% License, v. 2.0. If a copy of the MPL was not distributed with this
+%% file, You can obtain one at https://mozilla.org/MPL/2.0/.
+%%
+%% Copyright (c) 2007-2022 VMware, Inc. or its affiliates.  All rights reserved.
+%%
+
 -module(rabbit_queue_type).
 -include("amqqueue.hrl").
 -include_lib("rabbit_common/include/resource.hrl").
@@ -6,8 +13,11 @@
          init/0,
          close/1,
          discover/1,
+         feature_flag_name/1,
          default/0,
+         is_supported/0,
          is_enabled/1,
+         is_compatible/4,
          declare/2,
          delete/4,
          is_recoverable/1,
@@ -32,8 +42,11 @@
          credit/5,
          dequeue/5,
          fold_state/3,
+         find_name_from_pid/2,
          is_policy_applicable/2,
          is_server_named_allowed/1,
+         arguments/1,
+         arguments/2,
          notify_decorators/1
          ]).
 
@@ -41,12 +54,17 @@
 -type queue_ref() :: queue_name() | atom().
 -type queue_state() :: term().
 -type msg_tag() :: term().
+-type arguments() :: queue_arguments | consumer_arguments.
+-type queue_type() :: rabbit_classic_queue | rabbit_quorum_queue | rabbit_stream_queue.
 
 -define(STATE, ?MODULE).
 
 %% Recoverable slaves shouldn't really be a generic one, but let's keep it here until
 %% mirrored queues are deprecated.
 -define(DOWN_KEYS, [name, durable, auto_delete, arguments, pid, recoverable_slaves, type, state]).
+
+%% TODO resolve all registered queue types from registry
+-define(QUEUE_TYPES, [rabbit_classic_queue, rabbit_quorum_queue, rabbit_stream_queue]).
 
 -define(QREF(QueueReference),
     (is_tuple(QueueReference) andalso element(1, QueueReference) == resource)
@@ -79,7 +97,7 @@
               state :: queue_state()}).
 
 
--record(?STATE, {ctxs = #{} :: #{queue_ref() => #ctx{} | queue_ref()},
+-record(?STATE, {ctxs = #{} :: #{queue_ref() => #ctx{}},
                  monitor_registry = #{} :: #{pid() => queue_ref()}
                 }).
 
@@ -109,8 +127,12 @@
               actions/0,
               settle_op/0]).
 
-%% is the queue type feature enabled
 -callback is_enabled() -> boolean().
+
+-callback is_compatible(Durable :: boolean(),
+                        Exclusive :: boolean(),
+                        AutoDelete :: boolean()) ->
+    boolean().
 
 -callback declare(amqqueue:amqqueue(), node()) ->
     {'new' | 'existing' | 'owner_died', amqqueue:amqqueue()} |
@@ -202,7 +224,7 @@
 -callback notify_decorators(amqqueue:amqqueue()) ->
     ok.
 
-%% TODO: this should be controlled by a registry that is populated on boot
+%% TODO: should this use a registry that's populated on boot?
 discover(<<"quorum">>) ->
     rabbit_quorum_queue;
 discover(<<"classic">>) ->
@@ -210,12 +232,33 @@ discover(<<"classic">>) ->
 discover(<<"stream">>) ->
     rabbit_stream_queue.
 
+feature_flag_name(<<"quorum">>) ->
+    quorum_queue;
+feature_flag_name(<<"classic">>) ->
+    undefined;
+feature_flag_name(<<"stream">>) ->
+    stream_queue;
+feature_flag_name(_) ->
+    undefined.
+
 default() ->
     rabbit_classic_queue.
 
+%% is the queue type API supported in the cluster
+is_supported() ->
+    %% the stream_queue feature enables
+    %% the queue_type internal message API
+    rabbit_feature_flags:is_enabled(stream_queue).
+
+%% is a specific queue type implementation enabled
 -spec is_enabled(module()) -> boolean().
 is_enabled(Type) ->
     Type:is_enabled().
+
+-spec is_compatible(module(), boolean(), boolean(), boolean()) ->
+    boolean().
+is_compatible(Type, Durable, Exclusive, AutoDelete) ->
+    Type:is_compatible(Durable, Exclusive, AutoDelete).
 
 -spec declare(amqqueue:amqqueue(), node()) ->
     {'new' | 'existing' | 'owner_died', amqqueue:amqqueue()} |
@@ -274,6 +317,11 @@ info(Q, Items) ->
 fold_state(Fun, Acc, #?STATE{ctxs = Ctxs}) ->
     maps:fold(Fun, Acc, Ctxs).
 
+%% slight hack to help provide backwards compatibility in the channel
+%% better than scanning the entire queue state
+find_name_from_pid(Pid, #?STATE{monitor_registry = Mons}) ->
+    maps:get(Pid, Mons, undefined).
+
 state_info(#ctx{state = S,
                 module = Mod}) ->
     Mod:state_info(S);
@@ -308,9 +356,23 @@ is_policy_applicable(Q, Policy) ->
                       not lists:member(P, NotApplicable)
               end, Policy).
 
+-spec is_server_named_allowed(queue_type()) -> boolean().
 is_server_named_allowed(Type) ->
     Capabilities = Type:capabilities(),
     maps:get(server_named, Capabilities, false).
+
+-spec arguments(arguments()) -> [binary()].
+arguments(ArgumentType) ->
+    Args0 = lists:map(fun(T) ->
+                              maps:get(ArgumentType, T:capabilities(), [])
+                      end, ?QUEUE_TYPES),
+    Args = lists:flatten(Args0),
+    lists:usort(Args).
+
+-spec arguments(arguments(), queue_type()) -> [binary()].
+arguments(ArgumentType, QueueType) ->
+    Capabilities = QueueType:capabilities(),
+    maps:get(ArgumentType, Capabilities, []).
 
 notify_decorators(Q) ->
     Mod = amqqueue:get_type(Q),
@@ -373,16 +435,15 @@ is_recoverable(Q) ->
     {Recovered :: [amqqueue:amqqueue()],
      Failed :: [amqqueue:amqqueue()]}.
 recover(VHost, Qs) ->
-   ByType = lists:foldl(
-              fun (Q, Acc) ->
-                      T = amqqueue:get_type(Q),
-                      maps:update_with(T, fun (X) ->
-                                                  [Q | X]
-                                          end, Acc)
-                      %% TODO resolve all registered queue types from registry
-              end, #{rabbit_classic_queue => [],
-                     rabbit_quorum_queue => [],
-                     rabbit_stream_queue => []}, Qs),
+    ByType0 = lists:map(fun(T) -> {T, []} end, ?QUEUE_TYPES),
+    ByType1 = maps:from_list(ByType0),
+    ByType = lists:foldl(
+               fun (Q, Acc) ->
+                       T = amqqueue:get_type(Q),
+                       maps:update_with(T, fun (X) ->
+                                                   [Q | X]
+                                           end, Acc)
+               end, ByType1, Qs),
    maps:fold(fun (Mod, Queues, {R0, F0}) ->
                      {Taken, {R, F}} =  timer:tc(Mod, recover, [VHost, Queues]),
                      rabbit_log:info("Recovering ~b queues of type ~s took ~bms",
@@ -430,10 +491,10 @@ handle_event(QRef, Evt, Ctxs) ->
 
 -spec module(queue_ref(), state()) ->
     {ok, module()} | {error, not_found}.
-module(QRef, Ctxs) ->
+module(QRef, State) ->
     %% events can arrive after a queue state has been cleared up
     %% so need to be defensive here
-    case get_ctx(QRef, Ctxs, undefined) of
+    case get_ctx(QRef, State, undefined) of
         #ctx{module = Mod} ->
             {ok, Mod};
         undefined ->
@@ -515,7 +576,8 @@ credit(Q, CTag, Credit, Drain, Ctxs) ->
 -spec dequeue(amqqueue:amqqueue(), boolean(),
               pid(), rabbit_types:ctag(), state()) ->
     {ok, non_neg_integer(), term(), state()}  |
-    {empty, state()}.
+    {empty, state()} | rabbit_types:error(term()) |
+    {protocol_error, Type :: atom(), Reason :: string(), Args :: term()}.
 dequeue(Q, NoAck, LimiterPid, CTag, Ctxs) ->
     #ctx{state = State0} = Ctx = get_ctx(Q, Ctxs),
     Mod = amqqueue:get_type(Q),
@@ -526,6 +588,8 @@ dequeue(Q, NoAck, LimiterPid, CTag, Ctxs) ->
             {empty, set_ctx(Q, Ctx#ctx{state = State}, Ctxs)};
         {error, _} = Err ->
             Err;
+        {timeout, _} = Err ->
+            {error, Err};
         {protocol_error, _, _, _} = Err ->
             Err
     end.
@@ -571,12 +635,7 @@ get_ctx_with(QRef, Contexts, undefined) when ?QREF(QRef) ->
 get_ctx(QRef, #?STATE{ctxs = Contexts}, Default) ->
     Ref = qref(QRef),
     %% if we use a QRef it should always be initialised
-    case maps:get(Ref, Contexts, undefined) of
-        #ctx{} = Ctx ->
-            Ctx;
-        undefined ->
-            Default
-    end.
+    maps:get(Ref, Contexts, Default).
 
 set_ctx(Q, Ctx, #?STATE{ctxs = Contexts} = State)
   when ?is_amqqueue(Q) ->

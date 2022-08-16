@@ -2,7 +2,7 @@
 %% License, v. 2.0. If a copy of the MPL was not distributed with this
 %% file, You can obtain one at https://mozilla.org/MPL/2.0/.
 %%
-%% Copyright (c) 2007-2021 VMware, Inc. or its affiliates.  All rights reserved.
+%% Copyright (c) 2007-2022 VMware, Inc. or its affiliates.  All rights reserved.
 %%
 -module(reader_SUITE).
 -compile([export_all]).
@@ -20,8 +20,12 @@ groups() ->
       {non_parallel_tests, [], [
                                 block,
                                 handle_invalid_frames,
-                                stats
-                               ]}
+                                stats,
+                                quorum_session_false,
+                                quorum_session_true,
+                                classic_session_true,
+                                classic_session_false
+      ]}
     ].
 
 suite() ->
@@ -153,6 +157,64 @@ stats(Config) ->
     [{Pid, _, _, _, _}] = rpc(Config, ets, lookup,
                               [connection_coarse_metrics, Pid]),
     emqttc:disconnect(C).
+
+get_durable_queue_type(Server, Q0) ->
+    QNameRes = rabbit_misc:r(<<"/">>, queue, Q0),
+    {ok, Q1} = rpc:call(Server, rabbit_amqqueue, lookup, [QNameRes]),
+    amqqueue:get_type(Q1).
+
+set_env(QueueType) ->
+    application:set_env(rabbitmq_mqtt, durable_queue_type, QueueType).
+
+get_env() ->
+    rabbit_mqtt_util:env(durable_queue_type).
+
+
+validate_durable_queue_type(Config, ClientName, CleanSession, Expected) ->
+    P = rabbit_ct_broker_helpers:get_node_config(Config, 0, tcp_port_mqtt),
+    Server = rabbit_ct_broker_helpers:get_node_config(Config, 0, nodename),
+    {ok, C} = emqttc:start_link([{host, "localhost"},
+    {port, P},
+    {clean_sess, CleanSession},
+    {client_id, ClientName},
+    {proto_ver, 3},
+    {logger, info},
+    {puback_timeout, 1}]),
+    emqttc:subscribe(C, <<"TopicB">>, qos1),
+    emqttc:publish(C, <<"TopicB">>, <<"Payload">>),
+    expect_publishes(<<"TopicB">>, [<<"Payload">>]),
+    emqttc:unsubscribe(C, [<<"TopicB">>]),
+    Prefix = <<"mqtt-subscription-">>,
+    Suffix = <<"qos1">>,
+    Q= <<Prefix/binary, ClientName/binary, Suffix/binary>>,
+    ?assertEqual(Expected,get_durable_queue_type(Server,Q)),
+    timer:sleep(500),
+    emqttc:disconnect(C).
+
+%% quorum queue test when enable
+quorum_session_false(Config) ->
+  %%  test if the quorum queue is enable after the setting
+    Default = rpc(Config, reader_SUITE, get_env, []),
+    rpc(Config, reader_SUITE, set_env, [quorum]),
+    validate_durable_queue_type(Config, <<"qCleanSessionFalse">>, false, rabbit_quorum_queue),
+    rpc(Config, reader_SUITE, set_env, [Default]).
+
+quorum_session_true(Config) ->
+  %%  in case clean session == true must be classic since quorum
+  %% doesn't support auto-delete
+    Default = rpc(Config, reader_SUITE, get_env, []),
+    rpc(Config, reader_SUITE, set_env, [quorum]),
+    validate_durable_queue_type(Config, <<"qCleanSessionTrue">>, true, rabbit_classic_queue),
+    rpc(Config, reader_SUITE, set_env, [Default]).
+
+classic_session_true(Config) ->
+  %%  with default configuration the queue is classic
+    validate_durable_queue_type(Config, <<"cCleanSessionTrue">>, true, rabbit_classic_queue).
+
+classic_session_false(Config) ->
+  %%  with default configuration the queue is classic
+    validate_durable_queue_type(Config, <<"cCleanSessionFalse">>, false, rabbit_classic_queue).
+
 
 expect_publishes(_Topic, []) -> ok;
 expect_publishes(Topic, [Payload|Rest]) ->

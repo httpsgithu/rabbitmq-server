@@ -2,14 +2,10 @@
 %% License, v. 2.0. If a copy of the MPL was not distributed with this
 %% file, You can obtain one at https://mozilla.org/MPL/2.0/.
 %%
-%% Copyright (c) 2007-2021 VMware, Inc. or its affiliates.  All rights reserved.
+%% Copyright (c) 2007-2022 VMware, Inc. or its affiliates.  All rights reserved.
 %%
 
 -module(rabbit_mqtt_reader).
-
-%% Transitional step until we can require Erlang/OTP 21 and
-%% use the now recommended try/catch syntax for obtaining the stack trace.
--compile(nowarn_deprecated_function).
 
 -behaviour(gen_server2).
 
@@ -123,6 +119,11 @@ handle_cast({close_connection, Reason},
 handle_cast(Msg, State) ->
     {stop, {mqtt_unexpected_cast, Msg}, State}.
 
+handle_info({#'basic.deliver'{}, #amqp_msg{}} = Delivery,
+    State) ->
+    %% receiving a message from a quorum queue
+    %% no delivery context
+    handle_info(erlang:insert_element(3, Delivery, undefined), State);
 handle_info({#'basic.deliver'{}, #amqp_msg{}, _DeliveryCtx} = Delivery,
             State = #state{ proc_state = ProcState }) ->
     callback_reply(State, rabbit_mqtt_processor:amqp_callback(Delivery,

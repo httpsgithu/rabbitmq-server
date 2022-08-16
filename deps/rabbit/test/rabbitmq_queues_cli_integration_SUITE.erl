@@ -2,7 +2,7 @@
 %% License, v. 2.0. If a copy of the MPL was not distributed with this
 %% file, You can obtain one at https://mozilla.org/MPL/2.0/.
 %%
-%% Copyright (c) 2017-2021 VMware, Inc. or its affiliates.  All rights reserved.
+%% Copyright (c) 2017-2022 VMware, Inc. or its affiliates.  All rights reserved.
 %%
 -module(rabbitmq_queues_cli_integration_SUITE).
 
@@ -43,16 +43,9 @@ init_per_group(tests, Config0) ->
     Config1 = rabbit_ct_helpers:set_config(
                 Config0, [{rmq_nodes_count, NumNodes},
                           {rmq_nodes_clustered, true}]),
-    Config2 = rabbit_ct_helpers:run_steps(Config1,
-                                          rabbit_ct_broker_helpers:setup_steps() ++
-                                          rabbit_ct_client_helpers:setup_steps()),
-    case rabbit_ct_broker_helpers:enable_feature_flag(Config2, quorum_queue) of
-        ok ->
-            Config2;
-        Skip ->
-            end_per_group(tests, Config2),
-            Skip
-    end.
+    rabbit_ct_helpers:run_steps(Config1,
+                                rabbit_ct_broker_helpers:setup_steps() ++
+                                rabbit_ct_client_helpers:setup_steps()).
 
 end_per_group(tests, Config) ->
     rabbit_ct_helpers:run_steps(Config,

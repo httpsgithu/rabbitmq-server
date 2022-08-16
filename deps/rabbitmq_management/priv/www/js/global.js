@@ -174,7 +174,7 @@ const QUEUE_EXTRA_CONTENT_REQUESTS = [];
 // All help ? popups
 var HELP = {
     'delivery-limit':
-      'The number of allowed unsuccessful delivery attempts. Once a message has been delivered unsuccessfully this many times it will be dropped or dead-lettered, depending on the queue configuration.',
+      'The number of allowed unsuccessful delivery attempts. Once a message has been delivered unsuccessfully more than this many times it will be dropped or dead-lettered, depending on the queue configuration.',
 
     'exchange-auto-delete':
       'If yes, the exchange will delete itself after at least one queue or exchange has been bound to this one, and then all queues or exchanges have been unbound.',
@@ -197,12 +197,6 @@ var HELP = {
     'queue-max-length-bytes':
       'Total body size for ready messages a queue can contain before it starts to drop them from its head.<br/>(Sets the "<a target="_blank" href="https://rabbitmq.com/maxlength.html">x-max-length-bytes</a>" argument.)',
 
-    'queue-max-in-memory-length':
-      'How many (ready) messages a quorum queue can contain in memory before it starts storing them on disk only.<br/>(Sets the x-max-in-memory-length argument.)',
-
-    'queue-max-in-memory-bytes':
-      'Total body size for ready messages a quorum queue can contain in memory before it starts storing them on disk only.<br/>(Sets the x-max-in-memory-bytes argument.)',
-
     'queue-max-age':
       'How long a message published to a stream queue can live before it is discarded.',
 
@@ -218,6 +212,9 @@ var HELP = {
     'queue-dead-letter-routing-key':
       'Optional replacement routing key to use when a message is dead-lettered. If this is not set, the message\'s original routing key will be used.<br/>(Sets the "<a target="_blank" href="https://rabbitmq.com/dlx.html">x-dead-letter-routing-key</a>" argument.)',
 
+    'queue-dead-letter-strategy':
+      'Valid values are <code>at-most-once</code> or <code>at-least-once</code>. It defaults to <code>at-most-once</code>. This setting is understood only by quorum queues. If <code>at-least-once</code> is set, <code>Overflow behaviour</code> must be set to <code>reject-publish</code>. Otherwise, dead letter strategy will fall back to <code>at-most-once</code>.',
+
     'queue-single-active-consumer':
       'If set, makes sure only one consumer at a time consumes from the queue and fails over to another registered consumer in case the active one is cancelled or dies.<br/>(Sets the "<a target="_blank" href="https://rabbitmq.com/consumers.html#single-active-consumer">x-single-active-consumer</a>" argument.)',
 
@@ -230,6 +227,9 @@ var HELP = {
     'queue-lazy':
       'Set the queue into lazy mode, keeping as many messages as possible on disk to reduce RAM usage; if not set, the queue will keep an in-memory cache to deliver messages as fast as possible.<br/>(Sets the "<a target="_blank" href="https://www.rabbitmq.com/lazy-queues.html">x-queue-mode</a>" argument.)',
 
+    'queue-version':
+      'Set the queue version. Defaults to version 1.<br/>Version 1 has a journal-based index that embeds small messages.<br/>Version 2 has a different index which improves memory usage and performance in many scenarios, as well as a per-queue store for messages that were previously embedded.<br/>(Sets the "x-queue-version" argument.)',
+
     'queue-overflow':
       'Sets the <a target="_blank" href="https://www.rabbitmq.com/maxlength.html#overflow-behaviour">queue overflow behaviour</a>. This determines what happens to messages when the maximum length of a queue is reached. Valid values are <code>drop-head</code>, <code>reject-publish</code> or <code>reject-publish-dlx</code>. The quorum queue type only supports <code>drop-head</code> and <code>reject-publish</code>.',
 
@@ -237,16 +237,19 @@ var HELP = {
        'Set the queue into master location mode, determining the rule by which the queue master is located when declared on a cluster of nodes.<br/>(Sets the "<a target="_blank" href="https://www.rabbitmq.com/ha.html">x-queue-master-locator</a>" argument.)',
 
     'queue-leader-locator':
-       'Set the queue into leader location mode, determining the rule by which the queue leader is located when declared on a cluster of nodes. Valid values are <code>client-local</code>, <code>random</code> and <code>least-leaders</code>.',
+       'Set the rule by which the queue leader is located when declared on a cluster of nodes. Valid values are <code>client-local</code> (default) and <code>balanced</code>.',
 
     'queue-initial-cluster-size':
        'Set the queue initial cluster size.',
 
     'queue-type':
-       'Set the queue type, determining the type of queue to use: raft-based high availability or classic queue. Valid values are <code>quorum</code> or <code>classic</code>. It defaults to <code>classic<code>. <br/>',
+       'Set the queue type, determining the type of queue to use: raft-based high availability or classic queue. Valid values are <code>quorum</code> or <code>classic</code>. It defaults to <code>classic</code>. <br/>',
 
     'queue-messages':
       '<p>Message counts.</p><p>Note that "in memory" and "persistent" are not mutually exclusive; persistent messages can be in memory as well as on disc, and transient messages can be paged out if memory is tight. Non-durable queues will consider all messages to be transient.</p>',
+
+    'queue-dead-lettered':
+      'Applies to messages dead-lettered with dead-letter-strategy <code>at-least-once</code>.',
 
     'queue-message-body-bytes':
       '<p>The sum total of the sizes of the message bodies in this queue. This only counts message bodies; it does not include message properties (including headers) or metadata used by the queue.</p><p>Note that "in memory" and "persistent" are not mutually exclusive; persistent messages can be in memory as well as on disc, and transient messages can be paged out if memory is tight. Non-durable queues will consider all messages to be transient.</p><p>If a message is routed to multiple queues on publication, its body will be stored only once (in memory and on disk) and shared between queues. The value shown here does not take account of this effect.</p>',
@@ -460,7 +463,7 @@ var HELP = {
 
     'memory-calculation-strategy-breakdown' : '<p>The setting <code>vm_memory_calculation_strategy</code> defines which of the below memory values is used to check if the memory usage reaches the watermark or paging to disk is required.</p><p><a target="_blank" href="https://www.rabbitmq.com/memory-use.html">Read more</a> on memory use.</p>',
 
-    'memory-calculation-strategy' : '<p>This value can be calculated using different strategies the <code>vm_memory_calculation_strategy</code> config setting.</p><p><a target="_blank" href="https://www.rabbitmq.com/memory-use.html">Read more</a> on memory use.</p>',
+    'memory-calculation-strategy' : '<p>This value can be calculated using different strategies, see the <code>vm_memory_calculation_strategy</code> configuration setting.</p><p><a target="_blank" href="https://www.rabbitmq.com/memory-use.html">Read more</a> on memory use.</p>',
 
     'binary-use' : '<p>Binary accounting is not exact; binaries are shared between processes (and thus the same binary might be counted in more than one section), and the VM does not allow us to track binaries that are not associated with processes (so some binary use might not appear at all).</p>',
 

@@ -2,7 +2,7 @@
 %% License, v. 2.0. If a copy of the MPL was not distributed with this
 %% file, You can obtain one at https://mozilla.org/MPL/2.0/.
 %%
-%% Copyright (c) 2007-2021 VMware, Inc. or its affiliates.  All rights reserved.
+%% Copyright (c) 2007-2022 VMware, Inc. or its affiliates.  All rights reserved.
 %%
 
 -module(rabbit_shovel_dyn_worker_sup).
@@ -46,7 +46,7 @@ init([Name, Config0]) ->
             %% always try to reconnect
             <<"never">>                        -> {permanent, N};
             %% this Shovel is an autodelete one
-              M when is_integer(M) andalso M > 0 -> {transient, N};
+              M when is_integer(M) andalso M >= 0 -> {transient, N};
               <<"queue-length">> -> {transient, N}
           end;
         %% reconnect-delay = 0 means "do not reconnect"

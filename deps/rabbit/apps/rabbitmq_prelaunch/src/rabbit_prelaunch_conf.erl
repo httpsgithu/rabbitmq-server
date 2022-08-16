@@ -24,6 +24,7 @@ setup(Context) ->
     %% TODO: Check if directories/files are inside Mnesia dir.
 
     ok = set_default_config(),
+    ok = disable_kernel_overlapping_partitions(),
 
     AdditionalConfigFiles = find_additional_config_files(Context),
     AdvancedConfigFile = find_actual_advanced_config_file(Context),
@@ -70,7 +71,6 @@ setup(Context) ->
                     #{config_files => [],
                       config_advanced_file => undefined}
             end,
-    ok = set_credentials_obfuscation_secret(),
     ?LOG_DEBUG(
       "Saving config state to application env: ~p", [State],
       #{domain => ?RMQLOG_DOMAIN_PRELAUNCH}),
@@ -91,6 +91,7 @@ set_default_config() ->
                #{domain => ?RMQLOG_DOMAIN_PRELAUNCH}),
     OsirisConfig =
         case osiris_util:get_replication_configuration_from_tls_dist(
+                fun rabbit_prelaunch_file:consult_file/1,
                 fun osiris_log/3) of
             [] ->
                 [];
@@ -201,7 +202,7 @@ determine_config_format(File) ->
         0 ->
             cuttlefish;
         _ ->
-            case file:consult(File) of
+            case rabbit_prelaunch_file:consult_file(File) of
                 {ok, _} -> erlang;
                 _       -> cuttlefish
             end
@@ -384,7 +385,7 @@ override_with_advanced_config(Config, AdvancedConfigFile) ->
       "Override with advanced configuration file \"~ts\"",
       [AdvancedConfigFile],
       #{domain => ?RMQLOG_DOMAIN_PRELAUNCH}),
-    case file:consult(AdvancedConfigFile) of
+    case rabbit_prelaunch_file:consult_file(AdvancedConfigFile) of
         {ok, [AdvancedConfig]} ->
             cuttlefish_advanced:overlay(Config, AdvancedConfig);
         {ok, OtherTerms} ->
@@ -443,18 +444,6 @@ redact_env_var([{password, _Value} | Rest], Acc) ->
     redact_env_var(Rest, Acc ++ [{password, "********"}]);
 redact_env_var([AppVar | Rest], Acc) ->
     redact_env_var(Rest, [AppVar | Acc]).
-
-set_credentials_obfuscation_secret() ->
-    ?LOG_DEBUG(
-      "Refreshing credentials obfuscation configuration from env: ~p",
-      [application:get_all_env(credentials_obfuscation)],
-      #{domain => ?RMQLOG_DOMAIN_PRELAUNCH}),
-    ok = credentials_obfuscation:refresh_config(),
-    CookieBin = rabbit_data_coercion:to_binary(erlang:get_cookie()),
-    ?LOG_DEBUG(
-      "Setting credentials obfuscation secret to '~s'", [CookieBin],
-      #{domain => ?RMQLOG_DOMAIN_PRELAUNCH}),
-    ok = credentials_obfuscation:set_secret(CookieBin).
 
 %% -------------------------------------------------------------------
 %% Config decryption.
@@ -553,7 +542,7 @@ get_passphrase(ConfigEntryDecoder) ->
             io:format(IoDevice, "~n", []),
             PP;
         {file, Filename} ->
-            {ok, File} = file:read_file(Filename),
+            {ok, File} = rabbit_misc:raw_read_file(Filename),
             [PP|_] = binary:split(File, [<<"\r\n">>, <<"\n">>]),
             PP;
         PP ->
@@ -585,3 +574,9 @@ get_input_iodevice() ->
                     end
             end
     end.
+
+disable_kernel_overlapping_partitions() ->
+    %% This new "fixed" behavior seriously affects our own partition handling,
+    %% and potentially even libraries such as Aten and Ra,
+    %% so disable this to be forward-compatible with Erlang 25
+    application:set_env(kernel, prevent_overlapping_partitions, false).

@@ -2,7 +2,7 @@
 %% License, v. 2.0. If a copy of the MPL was not distributed with this
 %% file, You can obtain one at https://mozilla.org/MPL/2.0/.
 %%
-%% Copyright (c) 2007-2021 VMware, Inc. or its affiliates.  All rights reserved.
+%% Copyright (c) 2007-2022 VMware, Inc. or its affiliates.  All rights reserved.
 %%
 
 -module(definition_import_SUITE).
@@ -20,6 +20,7 @@ all() ->
      %% uses rabbit.definitions with import_backend set to local_filesystem
      {group, boot_time_import_using_modern_local_filesystem_source},
      {group, boot_time_import_using_public_https_source},
+     {group, skip_if_unchanged},
      {group, roundtrip},
      {group, import_on_a_running_node}
     ].
@@ -44,9 +45,13 @@ groups() ->
                                import_case11,
                                import_case12,
                                import_case13,
+                               import_case13a,
                                import_case14,
                                import_case15,
-                               import_case16
+                               import_case16,
+                               import_case17,
+                               import_case18,
+                               import_case19
                               ]},
         
         {boot_time_import_using_classic_source, [], [
@@ -64,6 +69,12 @@ groups() ->
         {roundtrip, [], [
             export_import_round_trip_case1,
             export_import_round_trip_case2
+        ]},
+
+        {skip_if_unchanged, [], [
+            %% these all must import the same definition file
+            import_on_a_booting_node_using_skip_if_unchanged,
+            import_case5
         ]}
     ].
 
@@ -101,6 +112,22 @@ init_per_group(boot_time_import_using_modern_local_filesystem_source = Group, Co
           {definitions, [
               {import_backend, rabbit_definitions_import_local_filesystem},
               {local_path,     CasePath}
+          ]}
+      ]}),
+    rabbit_ct_helpers:run_setup_steps(Config2, rabbit_ct_broker_helpers:setup_steps());
+%% same as the classic source semantically, uses skip_if_unchanged
+init_per_group(skip_if_unchanged = Group, Config) ->
+    CasePath = filename:join(?config(data_dir, Config), "case5.json"),
+    Config1 = rabbit_ct_helpers:set_config(Config, [
+        {rmq_nodename_suffix, Group},
+        {rmq_nodes_count, 1}
+      ]),
+    Config2 = rabbit_ct_helpers:merge_app_env(Config1,
+      {rabbit, [
+          {definitions, [
+              {import_backend,    rabbit_definitions_import_local_filesystem},
+              {local_path,        CasePath},
+              {skip_if_unchanged, true}
           ]}
       ]}),
     rabbit_ct_helpers:run_setup_steps(Config2, rabbit_ct_broker_helpers:setup_steps());
@@ -180,60 +207,91 @@ import_case11(Config) -> import_file_case(Config, "case11").
 import_case12(Config) -> import_invalid_file_case(Config, "failing_case12").
 
 import_case13(Config) ->
-    case rabbit_ct_broker_helpers:enable_feature_flag(Config, quorum_queue) of
-        ok ->
-            import_file_case(Config, "case13"),
-            VHost = <<"/">>,
-            QueueName = <<"definitions.import.case13.qq.1">>,
-            QueueIsImported =
-            fun () ->
-                    case queue_lookup(Config, VHost, QueueName) of
-                        {ok, _} -> true;
-                        _       -> false
-                    end
-            end,
-            rabbit_ct_helpers:await_condition(QueueIsImported, 20000),
-            {ok, Q} = queue_lookup(Config, VHost, QueueName),
+    import_file_case(Config, "case13"),
+    VHost = <<"/">>,
+    QueueName = <<"definitions.import.case13.qq.1">>,
+    QueueIsImported =
+    fun () ->
+            case queue_lookup(Config, VHost, QueueName) of
+                {ok, _} -> true;
+                _       -> false
+            end
+    end,
+    rabbit_ct_helpers:await_condition(QueueIsImported, 20000),
+    {ok, Q} = queue_lookup(Config, VHost, QueueName),
 
-            %% see rabbitmq/rabbitmq-server#2400, rabbitmq/rabbitmq-server#2426
-            ?assert(amqqueue:is_quorum(Q)),
-            ?assertEqual([{<<"x-max-length">>, long, 991},
-                          {<<"x-queue-type">>, longstr, <<"quorum">>}],
-                         amqqueue:get_arguments(Q));
-        Skip ->
-            Skip
-    end.
+    %% see rabbitmq/rabbitmq-server#2400, rabbitmq/rabbitmq-server#2426
+    ?assert(amqqueue:is_quorum(Q)),
+    ?assertEqual([{<<"x-max-length">>, long, 991},
+                  {<<"x-queue-type">>, longstr, <<"quorum">>}],
+                 amqqueue:get_arguments(Q)).
+
+import_case13a(Config) ->
+    import_file_case(Config, "case13"),
+    VHost = <<"/">>,
+    QueueName = <<"definitions.import.case13.qq.1">>,
+    QueueIsImported =
+    fun () ->
+            case queue_lookup(Config, VHost, QueueName) of
+                {ok, _} -> true;
+                _       -> false
+            end
+    end,
+    rabbit_ct_helpers:await_condition(QueueIsImported, 20000),
+    {ok, Q} = queue_lookup(Config, VHost, QueueName),
+
+    %% We expect that importing an existing queue (i.e. same vhost and name)
+    %% but with different arguments and different properties is a no-op.
+    import_file_case(Config, "case13a"),
+    timer:sleep(1000),
+    ?assertMatch({ok, Q}, queue_lookup(Config, VHost, QueueName)).
 
 import_case14(Config) -> import_file_case(Config, "case14").
 %% contains a user with tags as a list
 import_case15(Config) -> import_file_case(Config, "case15").
 %% contains a virtual host with tags
 import_case16(Config) ->
-    case rabbit_ct_helpers:is_mixed_versions() of
-      false ->
-        case rabbit_ct_broker_helpers:enable_feature_flag(Config, virtual_host_metadata) of
-            ok ->
-                import_file_case(Config, "case16"),
-                VHost = <<"tagged">>,
-                VHostIsImported =
-                fun () ->
-                        case vhost_lookup(Config, VHost) of
-                            {error, {no_such_vhosts, _}} -> false;
-                            _       -> true
-                        end
-                end,
-                rabbit_ct_helpers:await_condition(VHostIsImported, 20000),
-                VHostRec = vhost_lookup(Config, VHost),
-                ?assertEqual(<<"A case16 description">>, vhost:get_description(VHostRec)),
-                ?assertEqual([multi_dc_replication,ab,cde], vhost:get_tags(VHostRec)),
+    import_file_case(Config, "case16"),
+    VHost = <<"tagged">>,
+    VHostIsImported =
+    fun () ->
+            case vhost_lookup(Config, VHost) of
+                {error, {no_such_vhosts, _}} -> false;
+                _       -> true
+            end
+    end,
+    rabbit_ct_helpers:await_condition(VHostIsImported, 20000),
+    VHostRec = vhost_lookup(Config, VHost),
+    ?assertEqual(<<"A case16 description">>, vhost:get_description(VHostRec)),
+    ?assertEqual(<<"quorum">>, vhost:get_default_queue_type(VHostRec)),
+    ?assertEqual([multi_dc_replication,ab,cde], vhost:get_tags(VHostRec)),
 
-                ok;
-            Skip ->
-                Skip
-        end;
-      _ ->
-        %% skip the test in mixed version mode
-        {skip, "Should not run in mixed version environments"}
+    ok.
+
+import_case17(Config) -> import_invalid_file_case(Config, "failing_case17").
+
+import_case18(Config) ->
+    import_file_case(Config, "case18"),
+    User = <<"limited_guest">>,
+    UserIsImported =
+    fun () ->
+            case user_lookup(Config, User) of
+                {error, not_found} -> false;
+                _       -> true
+            end
+    end,
+    rabbit_ct_helpers:await_condition(UserIsImported, 20000),
+    {ok, UserRec} = user_lookup(Config, User),
+    ?assertEqual(#{<<"max-connections">> => 2}, internal_user:get_limits(UserRec)),
+    ok.
+
+import_case19(Config) ->
+    case rabbit_ct_helpers:is_mixed_versions() of
+        false ->
+            import_invalid_file_case(Config, "failing_case19");
+        true ->
+            %% skip the test in mixed version mode
+            {skip, "Should not run in mixed version environments"}
     end.
 
 export_import_round_trip_case1(Config) ->
@@ -280,6 +338,15 @@ import_on_a_booting_node_using_modern_local_filesystem_source(Config) ->
 import_on_a_booting_node_using_public_https_source(Config) ->
     VHost = <<"bunny_testbed">>,
     %% verify that virtual host eventually starts
+    case rabbit_ct_broker_helpers:rpc(Config, 0, rabbit_vhost, await_running_on_all_nodes, [VHost, 3000]) of
+        ok -> ok;
+        {error, timeout} -> ct:fail("virtual host ~p was not imported on boot", [VHost])
+    end.
+
+import_on_a_booting_node_using_skip_if_unchanged(Config) ->
+    %% see case5.json
+    VHost = <<"vhost2">>,
+    %% verify that vhost2 eventually starts
     case rabbit_ct_broker_helpers:rpc(Config, 0, rabbit_vhost, await_running_on_all_nodes, [VHost, 3000]) of
         ok -> ok;
         {error, timeout} -> ct:fail("virtual host ~p was not imported on boot", [VHost])
@@ -382,3 +449,6 @@ queue_lookup(Config, VHost, Name) ->
 
 vhost_lookup(Config, VHost) ->
     rabbit_ct_broker_helpers:rpc(Config, 0, rabbit_vhost, lookup, [VHost]).
+
+user_lookup(Config, User) ->
+    rabbit_ct_broker_helpers:rpc(Config, 0, rabbit_auth_backend_internal, lookup_user, [User]).

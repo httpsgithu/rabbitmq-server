@@ -2,7 +2,7 @@
 %% License, v. 2.0. If a copy of the MPL was not distributed with this
 %% file, You can obtain one at https://mozilla.org/MPL/2.0/.
 %%
-%% Copyright (c) 2007-2021 VMware, Inc. or its affiliates.  All rights reserved.
+%% Copyright (c) 2007-2022 VMware, Inc. or its affiliates.  All rights reserved.
 %%
 
 -module(rabbit_mgmt_dispatcher).
@@ -114,6 +114,7 @@ dispatcher() ->
      {"/vhost-limits/:vhost",                                  rabbit_mgmt_wm_limits, []},
      {"/connections",                                          rabbit_mgmt_wm_connections, []},
      {"/connections/:connection",                              rabbit_mgmt_wm_connection, []},
+     {"/connections/username/:username",                       rabbit_mgmt_wm_connection_user_name, []},
      {"/connections/:connection/channels",                     rabbit_mgmt_wm_connection_channels, []},
      {"/channels",                                             rabbit_mgmt_wm_channels, []},
      {"/channels/:channel",                                    rabbit_mgmt_wm_channel, []},

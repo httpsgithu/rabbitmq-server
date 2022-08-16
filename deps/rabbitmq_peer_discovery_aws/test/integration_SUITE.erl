@@ -2,7 +2,7 @@
 %% License, v. 2.0. If a copy of the MPL was not distributed with this
 %% file, You can obtain one at https://mozilla.org/MPL/2.0/.
 %%
-%% Copyright (c) 2007-2021 VMware, Inc. or its affiliates.  All rights reserved.
+%% Copyright (c) 2007-2022 VMware, Inc. or its affiliates.  All rights reserved.
 %%
 
 -module(integration_SUITE).
@@ -44,8 +44,9 @@ groups() ->
 init_per_suite(Config) ->
     case rabbit_ct_helpers:is_mixed_versions() of
         true ->
-            %% These test would like passed in mixed versions, but they won't
-            %% actually honor mixed versions as currently specified via env var
+            %% These test would likely pass in mixed versions, but they won't
+            %% actually honor mixed versions like the other suites, as these
+            %% tests are docker image based
             {skip, "not mixed versions compatible"};
         _ ->
             inets:start(),
@@ -152,8 +153,6 @@ register_autoscaled_task(Config) ->
 task_json(Config, RabbitmqConf) ->
     DataDir = ?config(data_dir, Config),
     RabbitmqImage = ?config(rabbitmq_image, Config),
-    RabbitmqDefaultUser = ?config(rabbitmq_default_user, Config),
-    RabbitmqDefaultPass = ?config(rabbitmq_default_pass, Config),
     RabbitmqErlangCookie = ?config(rabbitmq_erlang_cookie, Config),
     ServiceName = ?config(ecs_service_name, Config),
 

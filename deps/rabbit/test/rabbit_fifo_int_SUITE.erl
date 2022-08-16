@@ -86,10 +86,10 @@ basics(Config) ->
     ClusterName = ?config(cluster_name, Config),
     ServerId = ?config(node_id, Config),
     UId = ?config(uid, Config),
-    CustomerTag = UId,
+    ConsumerTag = UId,
     ok = start_cluster(ClusterName, [ServerId]),
     FState0 = rabbit_fifo_client:init(ClusterName, [ServerId]),
-    {ok, FState1} = rabbit_fifo_client:checkout(CustomerTag, 1, simple_prefetch,
+    {ok, FState1} = rabbit_fifo_client:checkout(ConsumerTag, 1, simple_prefetch,
                                                 #{}, FState0),
 
     rabbit_quorum_queue:wal_force_roll_over(node()),
@@ -97,21 +97,22 @@ basics(Config) ->
     timer:sleep(1000),
 
     {ok, FState2} = rabbit_fifo_client:enqueue(one, FState1),
-    % process ra events
-    FState3 = process_ra_event(FState2, ?RA_EVENT_TIMEOUT),
 
-    FState5 = receive
+    FState4 = receive
                   {ra_event, From, Evt} ->
-                      case rabbit_fifo_client:handle_ra_event(From, Evt, FState3) of
-                          {ok, FState4,
+                      case rabbit_fifo_client:handle_ra_event(From, Evt, FState2) of
+                          {ok, FState3,
                            [{deliver, C, true,
                              [{_Qname, _QRef, MsgId, _SomBool, _Msg}]}]} ->
-                              {S, _A} = rabbit_fifo_client:settle(C, [MsgId], FState4),
+                              {S, _A} = rabbit_fifo_client:settle(C, [MsgId], FState3),
                               S
                       end
               after 5000 ->
                         exit(await_msg_timeout)
               end,
+
+    % process applied event
+    FState5 = process_ra_event(FState4, ?RA_EVENT_TIMEOUT),
 
     % process settle applied notification
     FState5b = process_ra_event(FState5, ?RA_EVENT_TIMEOUT),
@@ -126,20 +127,20 @@ basics(Config) ->
     end,
 
     {ok, FState6} = rabbit_fifo_client:enqueue(two, FState5b),
+    FState8 = receive
+                   {ra_event, Frm, E} ->
+                       case rabbit_fifo_client:handle_ra_event(Frm, E, FState6) of
+                           {ok, FState7, [{deliver, Ctag, true,
+                                           [{_, _, Mid, _, two}]}]} ->
+                               {S2, _A2} = rabbit_fifo_client:return(Ctag, [Mid], FState7),
+                               S2
+                       end
+               after 2000 ->
+                         exit(await_msg_timeout)
+               end,
     % process applied event
-    FState6b = process_ra_event(FState6, ?RA_EVENT_TIMEOUT),
+    _FState9 = process_ra_event(FState8, ?RA_EVENT_TIMEOUT),
 
-    receive
-        {ra_event, Frm, E} ->
-            case rabbit_fifo_client:handle_ra_event(Frm, E, FState6b) of
-                {ok, FState7, [{deliver, Ctag, true,
-                                [{_, _, Mid, _, two}]}]} ->
-                    {_, _} = rabbit_fifo_client:return(Ctag, [Mid], FState7),
-                    ok
-            end
-    after 2000 ->
-              exit(await_msg_timeout)
-    end,
     rabbit_quorum_queue:stop_server(ServerId),
     ok.
 
@@ -295,7 +296,7 @@ returns_after_down(Config) ->
     F0 = rabbit_fifo_client:init(ClusterName, [ServerId]),
     {ok, F1} = rabbit_fifo_client:enqueue(msg1, F0),
     {_, _, F2} = process_ra_events(receive_ra_events(1, 0), F1),
-    % start a customer in a separate processes
+    % start a consumer in a separate processes
     % that exits after checkout
     Self = self(),
     _Pid = spawn(fun () ->
@@ -375,7 +376,7 @@ discard(Config) ->
              machine => {module, rabbit_fifo,
                          #{queue_resource => discard,
                            dead_letter_handler =>
-                           {?MODULE, dead_letter_handler, [self()]}}}},
+                           {at_most_once, {?MODULE, dead_letter_handler, [self()]}}}}},
     _ = rabbit_quorum_queue:start_server(Conf),
     ok = ra:trigger_election(ServerId),
     _ = ra:members(ServerId),
@@ -387,8 +388,9 @@ discard(Config) ->
     F3 = discard_next_delivery(F2, 5000),
     {empty, _F4} = rabbit_fifo_client:dequeue(<<"tag1">>, settled, F3),
     receive
-        {dead_letter, Letters} ->
-            [{_, msg1}] = Letters,
+        {dead_letter, Reason, Letters} ->
+            [msg1] = Letters,
+            rejected = Reason,
             ok
     after 500 ->
               flush(),
@@ -510,8 +512,8 @@ test_queries(Config) ->
     rabbit_quorum_queue:stop_server(ServerId),
     ok.
 
-dead_letter_handler(Pid, Msgs) ->
-    Pid ! {dead_letter, Msgs}.
+dead_letter_handler(Pid, Reason, Msgs) ->
+    Pid ! {dead_letter, Reason, Msgs}.
 
 dequeue(Config) ->
     ClusterName = ?config(cluster_name, Config),

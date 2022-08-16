@@ -2,7 +2,7 @@
 %% License, v. 2.0. If a copy of the MPL was not distributed with this
 %% file, You can obtain one at https://mozilla.org/MPL/2.0/.
 %%
-%% Copyright (c) 2010-2021 VMware, Inc. or its affiliates.  All rights reserved.
+%% Copyright (c) 2010-2022 VMware, Inc. or its affiliates.  All rights reserved.
 %%
 
 -module(rabbit_mirror_queue_slave).
@@ -1040,6 +1040,11 @@ process_instruction({set_queue_mode, Mode},
                     State = #state { backing_queue       = BQ,
                                      backing_queue_state = BQS }) ->
     BQS1 = BQ:set_queue_mode(Mode, BQS),
+    {ok, State #state { backing_queue_state = BQS1 }};
+process_instruction({set_queue_version, Version},
+                    State = #state { backing_queue       = BQ,
+                                     backing_queue_state = BQS }) ->
+    BQS1 = BQ:set_queue_version(Version, BQS),
     {ok, State #state { backing_queue_state = BQS1 }}.
 
 maybe_flow_ack(Sender, flow)    -> credit_flow:ack(Sender);

@@ -2,7 +2,7 @@
 %% License, v. 2.0. If a copy of the MPL was not distributed with this
 %% file, You can obtain one at https://mozilla.org/MPL/2.0/.
 %%
-%% Copyright (c) 2007-2021 VMware, Inc. or its affiliates.  All rights reserved.
+%% Copyright (c) 2007-2022 VMware, Inc. or its affiliates.  All rights reserved.
 %%
 
 -module(rabbit_policies).
@@ -30,6 +30,7 @@ register() ->
         {Class, Name} <- [{policy_validator, <<"alternate-exchange">>},
                           {policy_validator, <<"dead-letter-exchange">>},
                           {policy_validator, <<"dead-letter-routing-key">>},
+                          {policy_validator, <<"dead-letter-strategy">>},
                           {policy_validator, <<"message-ttl">>},
                           {policy_validator, <<"expires">>},
                           {policy_validator, <<"max-length">>},
@@ -37,6 +38,7 @@ register() ->
                           {policy_validator, <<"max-in-memory-length">>},
                           {policy_validator, <<"max-in-memory-bytes">>},
                           {policy_validator, <<"queue-mode">>},
+                          {policy_validator, <<"queue-version">>},
                           {policy_validator, <<"overflow">>},
                           {policy_validator, <<"delivery-limit">>},
                           {policy_validator, <<"max-age">>},
@@ -84,6 +86,13 @@ validate_policy0(<<"dead-letter-routing-key">>, Value)
 validate_policy0(<<"dead-letter-routing-key">>, Value) ->
     {error, "~p is not a valid dead letter routing key", [Value]};
 
+validate_policy0(<<"dead-letter-strategy">>, <<"at-most-once">>) ->
+    ok;
+validate_policy0(<<"dead-letter-strategy">>, <<"at-least-once">>) ->
+    ok;
+validate_policy0(<<"dead-letter-strategy">>, Value) ->
+    {error, "~p is not a valid dead letter strategy", [Value]};
+
 validate_policy0(<<"message-ttl">>, Value)
   when is_integer(Value), Value >= 0 ->
     ok;
@@ -126,6 +135,14 @@ validate_policy0(<<"queue-mode">>, <<"lazy">>) ->
     ok;
 validate_policy0(<<"queue-mode">>, Value) ->
     {error, "~p is not a valid queue-mode value", [Value]};
+
+validate_policy0(<<"queue-version">>, 1) ->
+    ok;
+validate_policy0(<<"queue-version">>, 2) ->
+    ok;
+validate_policy0(<<"queue-version">>, Value) ->
+    {error, "~p is not a valid queue-version value", [Value]};
+
 validate_policy0(<<"overflow">>, <<"drop-head">>) ->
     ok;
 validate_policy0(<<"overflow">>, <<"reject-publish">>) ->
@@ -151,6 +168,9 @@ validate_policy0(<<"max-age">>, Value) ->
 
 validate_policy0(<<"queue-leader-locator">>, <<"client-local">>) ->
     ok;
+validate_policy0(<<"queue-leader-locator">>, <<"balanced">>) ->
+    ok;
+%% 'random' and 'least-leaders' are deprecated and get mapped to 'balanced'
 validate_policy0(<<"queue-leader-locator">>, <<"random">>) ->
     ok;
 validate_policy0(<<"queue-leader-locator">>, <<"least-leaders">>) ->
@@ -165,7 +185,7 @@ validate_policy0(<<"initial-cluster-size">>, Value) ->
     {error, "~p is not a valid cluster size", [Value]};
 
 validate_policy0(<<"stream-max-segment-size-bytes">>, Value)
-  when is_integer(Value), Value >= 0 ->
+  when is_integer(Value), Value >= 0, Value =< ?MAX_STREAM_MAX_SEGMENT_SIZE ->
     ok;
 validate_policy0(<<"stream-max-segment-size-bytes">>, Value) ->
     {error, "~p is not a valid segment size", [Value]}.

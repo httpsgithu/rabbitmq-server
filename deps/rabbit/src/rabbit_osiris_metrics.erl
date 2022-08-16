@@ -2,7 +2,7 @@
 %% License, v. 2.0. If a copy of the MPL was not distributed with this
 %% file, You can obtain one at https://mozilla.org/MPL/2.0/.
 %%
-%% Copyright (c) 2007-2021 VMware, Inc. or its affiliates.  All rights reserved.
+%% Copyright (c) 2007-2022 VMware, Inc. or its affiliates.  All rights reserved.
 %%
 
 -module(rabbit_osiris_metrics).
@@ -26,7 +26,8 @@
          online,
          members,
          memory,
-         readers
+         readers,
+         consumers
         ]).
 
 -record(state, {timeout :: non_neg_integer()}).
@@ -78,6 +79,7 @@ handle_info(tick, #state{timeout = Timeout} = State) ->
                               %% down `rabbit_sup` and the whole `rabbit` app.
                               []
                       end,
+
               rabbit_core_metrics:queue_stats(QName, Infos),
               rabbit_event:notify(queue_stats, Infos ++ [{name, QName},
                                                          {messages, COffs},

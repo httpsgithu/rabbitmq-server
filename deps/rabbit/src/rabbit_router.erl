@@ -2,7 +2,7 @@
 %% License, v. 2.0. If a copy of the MPL was not distributed with this
 %% file, You can obtain one at https://mozilla.org/MPL/2.0/.
 %%
-%% Copyright (c) 2007-2021 VMware, Inc. or its affiliates.  All rights reserved.
+%% Copyright (c) 2007-2022 VMware, Inc. or its affiliates.  All rights reserved.
 %%
 
 -module(rabbit_router).
@@ -32,7 +32,7 @@ match_bindings(SrcName, Match) ->
         Routes, Match(Binding)].
 
 -spec match_routing_key(rabbit_types:binding_source(),
-                             [routing_key()] | ['_']) ->
+                        [routing_key(), ...] | ['_']) ->
     match_result().
 
 match_routing_key(SrcName, [RoutingKey]) ->

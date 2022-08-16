@@ -2,7 +2,7 @@
 %% License, v. 2.0. If a copy of the MPL was not distributed with this
 %% file, You can obtain one at https://mozilla.org/MPL/2.0/.
 %%
-%% Copyright (c) 2007-2021 VMware, Inc. or its affiliates.  All rights reserved.
+%% Copyright (c) 2007-2022 VMware, Inc. or its affiliates.  All rights reserved.
 %%
 
 -module(rabbit_amqqueue_sup).
@@ -32,4 +32,9 @@ start_link(Q, StartMode) ->
     Marker ! stop,
     {ok, SupPid, QPid}.
 
-init([]) -> {ok, {{one_for_one, 5, 10}, []}}.
+init([]) ->
+    %% This is not something we want to expose. It helps test suites
+    %% that crash queue processes on purpose and may end up crashing
+    %% the queues faster than we normally allow.
+    {Intensity, Period} = application:get_env(rabbit, amqqueue_max_restart_intensity, {5, 10}),
+    {ok, {{one_for_one, Intensity, Period}, []}}.

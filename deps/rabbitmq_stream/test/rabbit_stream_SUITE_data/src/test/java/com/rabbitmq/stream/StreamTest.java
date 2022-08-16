@@ -11,7 +11,7 @@
 // The Original Code is RabbitMQ.
 //
 // The Initial Developer of the Original Code is Pivotal Software, Inc.
-// Copyright (c) 2020-2021 VMware, Inc. or its affiliates.  All rights reserved.
+// Copyright (c) 2020-2022 VMware, Inc. or its affiliates.  All rights reserved.
 //
 
 package com.rabbitmq.stream;
@@ -119,7 +119,7 @@ public class StreamTest {
                     (client1, subscriptionId, offset, messageCount1, dataSize) ->
                         client1.credit(subscriptionId, 10))
                 .messageListener(
-                    (subscriptionId, offset, chunkTimestamp, message) -> {
+                    (subscriptionId, offset, chunkTimestamp, committedChunkId, message) -> {
                       bodies.add(new String(message.getBodyAsBinary(), StandardCharsets.UTF_8));
                       consumingLatch.countDown();
                     }));

@@ -2,7 +2,7 @@
 %% License, v. 2.0. If a copy of the MPL was not distributed with this
 %% file, You can obtain one at https://mozilla.org/MPL/2.0/.
 %%
-%% Copyright (c) 2020-2021 VMware, Inc. or its affiliates.  All rights reserved.
+%% Copyright (c) 2020-2022 VMware, Inc. or its affiliates.  All rights reserved.
 %%
 
 -module(rabbit_stream_management_utils).
@@ -34,5 +34,4 @@ keep_tracked_stream_connections(Connections) ->
                  Connections).
 
 is_feature_flag_enabled() ->
-  FeatureFlagsEnabled = rabbit_ff_registry:list(enabled),
-  maps:is_key(stream_queue, FeatureFlagsEnabled).
+    rabbit_feature_flags:is_enabled(stream_queue).

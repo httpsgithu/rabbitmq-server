@@ -2,11 +2,12 @@
 %% License, v. 2.0. If a copy of the MPL was not distributed with this
 %% file, You can obtain one at https://mozilla.org/MPL/2.0/.
 %%
-%% Copyright (c) 2016-2021 VMware, Inc. or its affiliates.  All rights reserved.
+%% Copyright (c) 2016-2022 VMware, Inc. or its affiliates.  All rights reserved.
 %%
 
 -module(rabbit_ct_helpers).
 
+-include_lib("kernel/include/logger.hrl").
 -include_lib("common_test/include/ct.hrl").
 
 -deprecated({is_mixed_versions,1,"Use is_mixed_versions/0 instead"}).
@@ -26,6 +27,7 @@
     load_rabbitmqctl_app/1,
     ensure_rabbitmq_plugins_cmd/1,
     ensure_rabbitmq_queues_cmd/1,
+    redirect_logger_to_ct_logs/1,
     init_skip_as_error_flag/1,
     start_long_running_testsuite_monitor/1,
     stop_long_running_testsuite_monitor/1,
@@ -50,7 +52,10 @@
 
     await_condition/1,
     await_condition/2,
-    await_condition_with_retries/2
+    await_condition_with_retries/2,
+
+    eventually/1, eventually/3,
+    consistently/1, consistently/3
   ]).
 
 -define(SSL_CERT_PASSWORD, "test").
@@ -150,6 +155,34 @@ run_steps(Config, [Step | Rest]) ->
             exit("A setup step returned a non-proplist")
     end;
 run_steps(Config, []) ->
+    Config.
+
+redirect_logger_to_ct_logs(Config) ->
+    ct:pal(
+      ?LOW_IMPORTANCE,
+      "Configuring logger to send logs to common_test logs"),
+    logger:set_handler_config(cth_log_redirect, level, debug),
+
+    %% Let's use the same format as RabbitMQ itself.
+    logger:set_handler_config(
+      cth_log_redirect, formatter,
+      rabbit_prelaunch_early_logging:default_file_formatter(#{})),
+
+    %% We use an addition logger handler for messages tagged with a non-OTP
+    %% domain because by default, `cth_log_redirect' drop them.
+    {ok, LogCfg0} = logger:get_handler_config(cth_log_redirect),
+    LogCfg = maps:remove(id, maps:remove(module, LogCfg0)),
+    ok = logger:add_handler(
+           cth_log_redirect_any_domains, cth_log_redirect_any_domains,
+           LogCfg),
+
+    logger:remove_handler(default),
+
+    ct:pal(
+      ?LOW_IMPORTANCE,
+      "Logger configured to send logs to common_test logs; you should see "
+      "a message below saying so"),
+    ?LOG_INFO("Logger message logged to common_test logs"),
     Config.
 
 init_skip_as_error_flag(Config) ->
@@ -377,12 +410,16 @@ ensure_rabbitmq_run_cmd(Config) ->
     end.
 
 ensure_rabbitmq_run_secondary_cmd(Config) ->
-    Path = os:getenv("RABBITMQ_RUN_SECONDARY"),
-    case filelib:is_file(Path) of
-        true  ->
-            set_config(Config, {rabbitmq_run_secondary_cmd, Path});
+    case os:getenv("RABBITMQ_RUN_SECONDARY") of
         false ->
-            Config
+            Config;
+        Path ->
+            case filelib:is_file(Path) of
+                true  ->
+                    set_config(Config, {rabbitmq_run_secondary_cmd, Path});
+                false ->
+                    error("RABBITMQ_RUN_SECONDARY was set, but is not a valid file")
+            end
     end.
 
 ensure_erl_call_cmd(Config) ->
@@ -1030,7 +1067,7 @@ is_mixed_versions(Config) ->
 %% -------------------------------------------------------------------
 
 await_condition(ConditionFun) ->
-    await_condition(ConditionFun, 10000).
+    await_condition(ConditionFun, 10_000).
 
 await_condition(ConditionFun, Timeout) ->
     Retries = ceil(Timeout / 50),
@@ -1046,6 +1083,45 @@ await_condition_with_retries(ConditionFun, RetriesLeft) ->
         true ->
             ok
     end.
+
+%% Pass in any EUnit test object. Example:
+%% eventually(?_assertEqual(1, Actual))
+eventually({Line, Assertion} = TestObj)
+  when is_integer(Line), Line >= 0, is_function(Assertion, 0) ->
+    eventually(TestObj, 200, 5).
+
+eventually({Line, _}, _, 0) ->
+    erlang:error({assert_timeout_line, Line});
+eventually({Line, Assertion} = TestObj, PollInterval, PollCount)
+  when is_integer(Line), Line >= 0, is_function(Assertion, 0),
+       is_integer(PollInterval), PollInterval >= 0,
+       is_integer(PollCount), PollCount >= 0 ->
+    case catch Assertion() of
+        ok ->
+            ok;
+        Err ->
+            ct:pal(?LOW_IMPORTANCE,
+                   "Retrying in ~bms for ~b more times due to failed assertion in line ~b: ~p",
+                   [PollInterval, PollCount - 1, Line, Err]),
+            timer:sleep(PollInterval),
+            eventually(TestObj, PollInterval, PollCount - 1)
+    end.
+
+%% Pass in any EUnit test object. Example:
+%% consistently(?_assertEqual(1, Actual))
+consistently({Line, Assertion} = TestObj)
+  when is_integer(Line), Line >= 0, is_function(Assertion, 0) ->
+    consistently(TestObj, 200, 5).
+
+consistently(_, _, 0) ->
+    ok;
+consistently({Line, Assertion} = TestObj, PollInterval, PollCount)
+  when is_integer(Line), Line >= 0, is_function(Assertion, 0),
+       is_integer(PollInterval), PollInterval >= 0,
+       is_integer(PollCount), PollCount >= 0 ->
+    Assertion(),
+    timer:sleep(PollInterval),
+    consistently(TestObj, PollInterval, PollCount - 1).
 
 %% -------------------------------------------------------------------
 %% Cover-related functions.

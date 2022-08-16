@@ -2,7 +2,7 @@
 %% License, v. 2.0. If a copy of the MPL was not distributed with this
 %% file, You can obtain one at https://mozilla.org/MPL/2.0/.
 %%
-%% Copyright (c) 2020-2021 VMware, Inc. or its affiliates.  All rights reserved.
+%% Copyright (c) 2020-2022 VMware, Inc. or its affiliates.  All rights reserved.
 %%
 
 -include("resource.hrl").
@@ -93,6 +93,7 @@
 %% mnesia doesn't like unary records, so we add a dummy 'value' field
 -record(route, {binding, value = const}).
 -record(reverse_route, {reverse_binding, value = const}).
+-record(index_route, {source_key, destination, args = []}).
 
 -record(binding, {source, key, destination, args = []}).
 -record(reverse_binding, {destination, key, source, args = []}).
@@ -112,7 +113,7 @@
 -record(basic_message,
         {exchange_name,     %% The exchange where the message was received
          routing_keys = [], %% Routing keys used during publish
-         content,           %% The message content
+         content,           %% The message #content record
          id,                %% A `rabbit_guid:gen()` generated id
          is_persistent}).   %% Whether the message was published as persistent
 
@@ -209,7 +210,7 @@
         }).
 %%----------------------------------------------------------------------------
 
--define(COPYRIGHT_MESSAGE, "Copyright (c) 2007-2021 VMware, Inc. or its affiliates.").
+-define(COPYRIGHT_MESSAGE, "Copyright (c) 2007-2022 VMware, Inc. or its affiliates.").
 -define(INFORMATION_MESSAGE, "Licensed under the MPL 2.0. Website: https://rabbitmq.com").
 
 %% EMPTY_FRAME_SIZE, 8 = 1 + 2 + 4 + 1
@@ -271,3 +272,7 @@
 
 %% 3.6, 3.7, early 3.8
 -define(LEGACY_INDEX_SEGMENT_ENTRY_COUNT, 16384).
+
+%% Max value for stream max segment size
+-define(MAX_STREAM_MAX_SEGMENT_SIZE, 3_000_000_000).
+

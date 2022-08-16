@@ -2,7 +2,7 @@
 %% License, v. 2.0. If a copy of the MPL was not distributed with this
 %% file, You can obtain one at https://mozilla.org/MPL/2.0/.
 %%
-%% Copyright (c) 2007-2021 VMware, Inc. or its affiliates.  All rights reserved.
+%% Copyright (c) 2007-2022 VMware, Inc. or its affiliates.  All rights reserved.
 %%
 
 -module(aws_ecs_util).
@@ -169,6 +169,7 @@ ecs_up(Config) ->
     ProfileName = ?config(ecs_profile_name, Config),
     ClusterSize = ?config(ecs_cluster_size, Config),
     UpCmd = [EcsCliCmd, "up",
+             "--force",
              "--instance-role", InstanceRole,
              "--size", integer_to_list(ClusterSize),
              "--instance-type", "t2.medium",

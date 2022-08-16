@@ -2,7 +2,7 @@
 %% License, v. 2.0. If a copy of the MPL was not distributed with this
 %% file, You can obtain one at https://mozilla.org/MPL/2.0/.
 %%
-%% Copyright (c) 2007-2021 VMware, Inc. or its affiliates.  All rights reserved.
+%% Copyright (c) 2007-2022 VMware, Inc. or its affiliates.  All rights reserved.
 %%
 -module(prometheus_rabbitmq_core_metrics_collector).
 -export([register/0,
@@ -94,7 +94,6 @@
         {2, undefined, io_write_bytes_total, counter, "Total number of I/O bytes written", io_write_bytes},
         {2, undefined, io_sync_ops_total, counter, "Total number of I/O sync operations", io_sync_count},
         {2, undefined, io_seek_ops_total, counter, "Total number of I/O seek operations", io_seek_count},
-        {2, undefined, io_open_attempt_ops_total, counter, "Total number of file open attempts", io_file_handle_open_attempt_count},
         {2, undefined, io_reopen_ops_total, counter, "Total number of times files have been reopened", io_reopen_count},
         {2, undefined, schema_db_ram_tx_total, counter, "Total number of Schema DB memory transactions", mnesia_ram_tx_count},
         {2, undefined, schema_db_disk_tx_total, counter, "Total number of Schema DB disk transactions", mnesia_disk_tx_count},
@@ -102,12 +101,10 @@
         {2, undefined, msg_store_write_total, counter, "Total number of Message Store write operations", msg_store_write_count},
         {2, undefined, queue_index_read_ops_total, counter, "Total number of Queue Index read operations", queue_index_read_count},
         {2, undefined, queue_index_write_ops_total, counter, "Total number of Queue Index write operations", queue_index_write_count},
-        {2, undefined, queue_index_journal_write_ops_total, counter, "Total number of Queue Index Journal write operations", queue_index_journal_write_count},
         {2, ?MICROSECOND, io_read_time_seconds_total, counter, "Total I/O read time", io_read_time},
         {2, ?MICROSECOND, io_write_time_seconds_total, counter, "Total I/O write time", io_write_time},
         {2, ?MICROSECOND, io_sync_time_seconds_total, counter, "Total I/O sync time", io_sync_time},
-        {2, ?MICROSECOND, io_seek_time_seconds_total, counter, "Total I/O seek time", io_seek_time},
-        {2, ?MICROSECOND, io_open_attempt_time_seconds_total, counter, "Total file open attempts time", io_file_handle_open_attempt_time}
+        {2, ?MICROSECOND, io_seek_time_seconds_total, counter, "Total I/O seek time", io_seek_time}
     ]},
 
     {ra_metrics, [
@@ -159,6 +156,7 @@
         {2, undefined, queue_messages_unacked_bytes, gauge, "Size in bytes of all unacknowledged messages", message_bytes_unacknowledged},
         {2, undefined, queue_messages_paged_out, gauge, "Messages paged out to disk", messages_paged_out},
         {2, undefined, queue_messages_paged_out_bytes, gauge, "Size in bytes of messages paged out to disk", message_bytes_paged_out},
+        {2, undefined, queue_head_message_timestamp, gauge, "Timestamp of the first message in the queue, if any", head_message_timestamp},
         {2, undefined, queue_disk_reads_total, counter, "Total number of times queue read messages from disk", disk_reads},
         {2, undefined, queue_disk_writes_total, counter, "Total number of times queue wrote messages to disk", disk_writes}
     ]},

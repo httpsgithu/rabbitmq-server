@@ -2,12 +2,14 @@
 %% License, v. 2.0. If a copy of the MPL was not distributed with this
 %% file, You can obtain one at https://mozilla.org/MPL/2.0/.
 %%
-%% Copyright (c) 2007-2021 VMware, Inc. or its affiliates.  All rights reserved.
+%% Copyright (c) 2007-2022 VMware, Inc. or its affiliates.  All rights reserved.
 %%
 
 -module(rabbit_dead_letter).
 
--export([publish/5]).
+-export([publish/5,
+         make_msg/5,
+         detect_cycles/3]).
 
 -include_lib("rabbit_common/include/rabbit.hrl").
 -include_lib("rabbit_common/include/rabbit_framing.hrl").
@@ -15,19 +17,21 @@
 %%----------------------------------------------------------------------------
 
 -type reason() :: 'expired' | 'rejected' | 'maxlen' | delivery_limit.
+-export_type([reason/0]).
 
 %%----------------------------------------------------------------------------
 
 -spec publish(rabbit_types:message(), reason(), rabbit_types:exchange(),
               'undefined' | binary(), rabbit_amqqueue:name()) -> 'ok'.
-publish(Msg, Reason, X, RK, QName) ->
-    DLMsg = make_msg(Msg, Reason, X#exchange.name, RK, QName),
+publish(Msg, Reason, X, RK, SourceQName) ->
+    DLMsg = make_msg(Msg, Reason, X#exchange.name, RK, SourceQName),
     Delivery = rabbit_basic:delivery(false, false, DLMsg, undefined),
-    {Queues, Cycles} = detect_cycles(Reason, DLMsg,
+    {QNames, Cycles} = detect_cycles(Reason, DLMsg,
                                      rabbit_exchange:route(X, Delivery)),
     lists:foreach(fun log_cycle_once/1, Cycles),
-    _ = rabbit_queue_type:deliver(rabbit_amqqueue:lookup(Queues),
-                                  Delivery, stateless),
+    Qs0 = rabbit_amqqueue:lookup(QNames),
+    Qs = rabbit_amqqueue:prepend_extra_bcc(Qs0),
+    _ = rabbit_queue_type:deliver(Qs, Delivery, stateless),
     ok.
 
 make_msg(Msg = #basic_message{content       = Content,
@@ -39,7 +43,7 @@ make_msg(Msg = #basic_message{content       = Content,
             undefined -> {RoutingKeys, fun (H) -> H end};
             _         -> {[RK], fun (H) -> lists:keydelete(<<"CC">>, 1, H) end}
         end,
-    ReasonBin = list_to_binary(atom_to_list(Reason)),
+    ReasonBin = atom_to_binary(Reason),
     TimeSec = os:system_time(seconds),
     PerMsgTTL = per_msg_ttl_header(Content#content.properties),
     HeadersFun2 =

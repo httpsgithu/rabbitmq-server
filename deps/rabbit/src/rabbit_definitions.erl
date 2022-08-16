@@ -2,9 +2,32 @@
 %% License, v. 2.0. If a copy of the MPL was not distributed with this
 %% file, You can obtain one at https://mozilla.org/MPL/2.0/.
 %%
-%% Copyright (c) 2007-2021 VMware, Inc. or its affiliates.  All rights reserved.
+%% Copyright (c) 2007-2022 VMware, Inc. or its affiliates.  All rights reserved.
 %%
 
+
+%% This module is responsible for definition import. Definition import makes
+%% it possible to seed a cluster with virtual hosts, users, permissions, policies,
+%% a messaging topology, and so on.
+%%
+%% These resources can be loaded from a local filesystem (a JSON file or a conf.d-style
+%% directory of files), an HTTPS source or any other source using a user-provided module.
+%%
+%% Definition import can be performed on node boot or at any time via CLI tools
+%% or the HTTP API. On node boot, every node performs definition import independently.
+%% However, some resource types (queues and bindings) are imported only when a certain
+%% number of nodes join the cluster. This is so that queues and their dependent
+%% objects (bindings) have enough nodes to place their replicas on.
+%%
+%% It is possible for the user to opt into skipping definition import if
+%% file/source content has not changed.
+%%
+%% See also
+%%
+%%  * rabbit.schema (core Cuttlefish schema mapping file)
+%%  * rabbit_definitions_import_local_filesystem
+%%  * rabbit_definitions_import_http
+%%  * rabbit_definitions_hashing
 -module(rabbit_definitions).
 -include_lib("rabbit_common/include/rabbit.hrl").
 
@@ -19,7 +42,9 @@
 ]).
 %% import
 -export([import_raw/1, import_raw/2, import_parsed/1, import_parsed/2,
-         apply_defs/2, apply_defs/3, apply_defs/4, apply_defs/5]).
+         import_parsed_with_hashing/1, import_parsed_with_hashing/2,
+         apply_defs/2, apply_defs/3, apply_defs/4, apply_defs/5,
+         should_skip_if_unchanged/0]).
 
 -export([all_definitions/0]).
 -export([
@@ -101,6 +126,63 @@ import_parsed(Body0, VHost) ->
     Body = atomise_map_keys(Body0),
     apply_defs(Body, ?INTERNAL_USER, fun() -> ok end, VHost).
 
+
+-spec import_parsed_with_hashing(Defs :: #{any() => any()} | list()) -> ok | {error, term()}.
+import_parsed_with_hashing(Body0) when is_list(Body0) ->
+    import_parsed(maps:from_list(Body0));
+import_parsed_with_hashing(Body0) when is_map(Body0) ->
+    rabbit_log:info("Asked to import definitions. Acting user: ~s", [?INTERNAL_USER]),
+    case should_skip_if_unchanged() of
+        false ->
+            import_parsed(Body0);
+        true  ->
+            Body         = atomise_map_keys(Body0),
+            PreviousHash = rabbit_definitions_hashing:stored_global_hash(),
+            Algo         = rabbit_definitions_hashing:hashing_algorithm(),
+            case rabbit_definitions_hashing:hash(Algo, Body) of
+                PreviousHash ->
+                    rabbit_log:info("Submitted definition content hash matches the stored one: ~s", [binary:part(rabbit_misc:hexify(PreviousHash), 0, 12)]),
+                    ok;
+                Other        ->
+                    rabbit_log:debug("Submitted definition content hash: ~s, stored one: ~s", [
+                        binary:part(rabbit_misc:hexify(PreviousHash), 0, 10),
+                        binary:part(rabbit_misc:hexify(Other), 0, 10)
+                    ]),
+                    Result = apply_defs(Body, ?INTERNAL_USER),
+                    rabbit_definitions_hashing:store_global_hash(Other),
+                    Result
+            end
+    end.
+
+-spec import_parsed_with_hashing(Defs :: #{any() => any() | list()}, VHost :: vhost:name()) -> ok | {error, term()}.
+import_parsed_with_hashing(Body0, VHost) when is_list(Body0) ->
+    import_parsed(maps:from_list(Body0), VHost);
+import_parsed_with_hashing(Body0, VHost) ->
+    rabbit_log:info("Asked to import definitions for virtual host '~s'. Acting user: ~s", [?INTERNAL_USER, VHost]),
+
+    case should_skip_if_unchanged() of
+        false ->
+            import_parsed(Body0, VHost);
+        true  ->
+            Body = atomise_map_keys(Body0),
+            PreviousHash = rabbit_definitions_hashing:stored_vhost_specific_hash(VHost),
+            Algo         = rabbit_definitions_hashing:hashing_algorithm(),
+            case rabbit_definitions_hashing:hash(Algo, Body) of
+                PreviousHash ->
+                    rabbit_log:info("Submitted definition content hash matches the stored one: ~s", [binary:part(rabbit_misc:hexify(PreviousHash), 0, 12)]),
+                    ok;
+                Other        ->
+                    rabbit_log:debug("Submitted definition content hash: ~s, stored one: ~s", [
+                        binary:part(rabbit_misc:hexify(PreviousHash), 0, 10),
+                        binary:part(rabbit_misc:hexify(Other), 0, 10)
+                    ]),
+                    Result = apply_defs(Body, ?INTERNAL_USER, fun() -> ok end, VHost),
+                    rabbit_definitions_hashing:store_vhost_specific_hash(VHost, Other, ?INTERNAL_USER),
+                    Result
+            end
+    end.
+
+
 -spec all_definitions() -> map().
 all_definitions() ->
     Xs = list_exchanges(),
@@ -134,7 +216,9 @@ all_definitions() ->
 
 -spec has_configured_definitions_to_load() -> boolean().
 has_configured_definitions_to_load() ->
-    has_configured_definitions_to_load_via_classic_option() or has_configured_definitions_to_load_via_modern_option().
+    has_configured_definitions_to_load_via_classic_option() or
+        has_configured_definitions_to_load_via_modern_option() or
+        has_configured_definitions_to_load_via_management_option().
 
 %% Retained for backwards compatibility, implicitly assumes the local filesystem source
 maybe_load_definitions(App, Key) ->
@@ -163,13 +247,38 @@ has_configured_definitions_to_load_via_classic_option() ->
         {ok, _Path} -> true
     end.
 
+has_configured_definitions_to_load_via_management_option() ->
+    case application:get_env(rabbitmq_management, load_definitions) of
+        undefined   -> false;
+        {ok, none}  -> false;
+        {ok, _Path} -> true
+    end.
+
 maybe_load_definitions_from_local_filesystem(App, Key) ->
     case application:get_env(App, Key) of
         undefined  -> ok;
         {ok, none} -> ok;
         {ok, Path} ->
             IsDir = filelib:is_dir(Path),
-            rabbit_definitions_import_local_filesystem:load(IsDir, Path)
+            Mod = rabbit_definitions_import_local_filesystem,
+
+            case should_skip_if_unchanged() of
+                false ->
+                    rabbit_log:debug("Will use module ~s to import definitions", [Mod]),
+                    Mod:load(IsDir, Path);
+                true ->
+                    Algo = rabbit_definitions_hashing:hashing_algorithm(),
+                    rabbit_log:debug("Will use module ~s to import definitions (if definition file/directory has changed, hashing algo: ~s)", [Mod, Algo]),
+                    CurrentHash = rabbit_definitions_hashing:stored_global_hash(),
+                    rabbit_log:debug("Previously stored hash value of imported definitions: ~s...", [binary:part(rabbit_misc:hexify(CurrentHash), 0, 12)]),
+                    case Mod:load_with_hashing(IsDir, Path, CurrentHash, Algo) of
+                        CurrentHash ->
+                            rabbit_log:info("Hash value of imported definitions matches current contents");
+                        UpdatedHash ->
+                            rabbit_log:debug("Hash value of imported definitions has changed to ~s", [binary:part(rabbit_misc:hexify(UpdatedHash), 0, 12)]),
+                            rabbit_definitions_hashing:store_global_hash(UpdatedHash)
+                    end
+            end
     end.
 
 maybe_load_definitions_from_pluggable_source(App, Key) ->
@@ -183,8 +292,23 @@ maybe_load_definitions_from_pluggable_source(App, Key) ->
                     {error, "definition import source is configured but definitions.import_backend is not set"};
                 ModOrAlias ->
                     Mod = normalize_backend_module(ModOrAlias),
-                    rabbit_log:debug("Will use module ~s to import definitions", [Mod]),
-                    Mod:load(Proplist)
+                    case should_skip_if_unchanged() of
+                        false ->
+                            rabbit_log:debug("Will use module ~s to import definitions", [Mod]),
+                            Mod:load(Proplist);
+                        true ->
+                            rabbit_log:debug("Will use module ~s to import definitions (if definition file/directory/source has changed)", [Mod]),
+                            CurrentHash = rabbit_definitions_hashing:stored_global_hash(),
+                            rabbit_log:debug("Previously stored hash value of imported definitions: ~s...", [binary:part(rabbit_misc:hexify(CurrentHash), 0, 12)]),
+                            Algo = rabbit_definitions_hashing:hashing_algorithm(),
+                            case Mod:load_with_hashing(Proplist, CurrentHash, Algo) of
+                                CurrentHash ->
+                                    rabbit_log:info("Hash value of imported definitions matches current contents");
+                                UpdatedHash ->
+                                    rabbit_log:debug("Hash value of imported definitions has changed to ~s...", [binary:part(rabbit_misc:hexify(CurrentHash), 0, 12)]),
+                                    rabbit_definitions_hashing:store_global_hash(UpdatedHash)
+                            end
+                    end
             end
     end.
 
@@ -232,19 +356,34 @@ atomise_map_keys(Decoded) ->
         Acc#{rabbit_data_coercion:to_atom(K, utf8) => V}
               end, Decoded, Decoded).
 
+-spec should_skip_if_unchanged() -> boolean().
+should_skip_if_unchanged() ->
+    OptedIn = case application:get_env(rabbit, definitions) of
+        undefined   -> false;
+        {ok, none}  -> false;
+        {ok, []}    -> false;
+        {ok, Proplist} ->
+            pget(skip_if_unchanged, Proplist, false)
+    end,
+    %% if we do not take this into consideration, delayed queue import will be delayed
+    %% on nodes that join before the target cluster size is reached, and skipped
+    %% once it is
+    ReachedTargetClusterSize = rabbit_nodes:reached_target_cluster_size(),
+    OptedIn andalso ReachedTargetClusterSize.
+
+
 -spec apply_defs(Map :: #{atom() => any()}, ActingUser :: rabbit_types:username()) -> 'ok' | {error, term()}.
 
 apply_defs(Map, ActingUser) ->
     apply_defs(Map, ActingUser, fun () -> ok end).
 
--spec apply_defs(Map :: #{atom() => any()}, ActingUser :: rabbit_types:username(),
-                SuccessFun :: fun(() -> 'ok')) -> 'ok'  | {error, term()};
-                (Map :: #{atom() => any()}, ActingUser :: rabbit_types:username(),
-                VHost :: vhost:name()) -> 'ok'  | {error, term()}.
+-type vhost_or_success_fun() :: vhost:name() | fun(() -> 'ok').
+-spec apply_defs(Map :: #{atom() => any()},
+                 ActingUser :: rabbit_types:username(),
+                 VHostOrSuccessFun :: vhost_or_success_fun()) -> 'ok' | {error, term()}.
 
 apply_defs(Map, ActingUser, VHost) when is_binary(VHost) ->
     apply_defs(Map, ActingUser, fun () -> ok end, VHost);
-
 apply_defs(Map, ActingUser, SuccessFun) when is_function(SuccessFun) ->
     Version = maps:get(rabbitmq_version, Map, maps:get(rabbit_version, Map, undefined)),
     try
@@ -257,15 +396,26 @@ apply_defs(Map, ActingUser, SuccessFun) when is_function(SuccessFun) ->
         concurrent_for_all(permissions,        ActingUser, Map, fun add_permission/2),
         concurrent_for_all(topic_permissions,  ActingUser, Map, fun add_topic_permission/2),
 
-        concurrent_for_all(queues,             ActingUser, Map, fun add_queue/2),
         concurrent_for_all(exchanges,          ActingUser, Map, fun add_exchange/2),
-        concurrent_for_all(bindings,           ActingUser, Map, fun add_binding/2),
 
         sequential_for_all(global_parameters,  ActingUser, Map, fun add_global_parameter/2),
         %% importing policies concurrently can be unsafe as queues will be getting
         %% potentially out of order notifications of applicable policy changes
         sequential_for_all(policies,           ActingUser, Map, fun add_policy/2),
         sequential_for_all(parameters,         ActingUser, Map, fun add_parameter/2),
+
+        rabbit_nodes:if_reached_target_cluster_size(
+            fun() ->
+                concurrent_for_all(queues,   ActingUser, Map, fun add_queue/2),
+                concurrent_for_all(bindings, ActingUser, Map, fun add_binding/2)
+            end,
+
+            fun() ->
+                rabbit_log:info("There are fewer than target cluster size (~b) nodes online,"
+                                " skipping queue and binding import from definitions",
+                                [rabbit_nodes:target_cluster_size_hint()])
+            end
+        ),
 
         SuccessFun(),
         ok
@@ -278,20 +428,30 @@ apply_defs(Map, ActingUser, SuccessFun) when is_function(SuccessFun) ->
                 SuccessFun :: fun(() -> 'ok'),
                 VHost :: vhost:name()) -> 'ok' | {error, term()}.
 
-apply_defs(Map, ActingUser, SuccessFun, VHost) when is_binary(VHost) ->
+apply_defs(Map, ActingUser, SuccessFun, VHost) when is_function(SuccessFun); is_binary(VHost) ->
     rabbit_log:info("Asked to import definitions for a virtual host. Virtual host: ~p, acting user: ~p",
                     [VHost, ActingUser]),
     try
         validate_limits(Map, VHost),
 
-        concurrent_for_all(queues,     ActingUser, Map, VHost, fun add_queue/3),
         concurrent_for_all(exchanges,  ActingUser, Map, VHost, fun add_exchange/3),
-        concurrent_for_all(bindings,   ActingUser, Map, VHost, fun add_binding/3),
-
         sequential_for_all(parameters, ActingUser, Map, VHost, fun add_parameter/3),
         %% importing policies concurrently can be unsafe as queues will be getting
         %% potentially out of order notifications of applicable policy changes
         sequential_for_all(policies,   ActingUser, Map, VHost, fun add_policy/3),
+
+        rabbit_nodes:if_reached_target_cluster_size(
+            fun() ->
+                concurrent_for_all(queues,     ActingUser, Map, VHost, fun add_queue/3),
+                concurrent_for_all(bindings,   ActingUser, Map, VHost, fun add_binding/3)
+            end,
+
+            fun() ->
+                rabbit_log:info("There are fewer than target cluster size (~b) nodes online,"
+                                " skipping queue and binding import from definitions",
+                                [rabbit_nodes:target_cluster_size_hint()])
+            end
+        ),
 
         SuccessFun()
     catch {error, E} -> {error, format(E)};
@@ -310,14 +470,24 @@ apply_defs(Map, ActingUser, SuccessFun, ErrorFun, VHost) ->
     try
         validate_limits(Map, VHost),
 
-        concurrent_for_all(queues,     ActingUser, Map, VHost, fun add_queue/3),
-        concurrent_for_all(exchanges,  ActingUser, Map, VHost, fun add_exchange/3),
         concurrent_for_all(bindings,   ActingUser, Map, VHost, fun add_binding/3),
-
         sequential_for_all(parameters, ActingUser, Map, VHost, fun add_parameter/3),
         %% importing policies concurrently can be unsafe as queues will be getting
         %% potentially out of order notifications of applicable policy changes
         sequential_for_all(policies,   ActingUser, Map, VHost, fun add_policy/3),
+
+        rabbit_nodes:if_reached_target_cluster_size(
+            fun() ->
+                concurrent_for_all(queues,     ActingUser, Map, VHost, fun add_queue/3),
+                concurrent_for_all(bindings,   ActingUser, Map, VHost, fun add_binding/3)
+            end,
+
+            fun() ->
+                rabbit_log:info("There are fewer than target cluster size (~b) nodes online,"
+                                " skipping queue and binding import from definitions",
+                                [rabbit_nodes:target_cluster_size_hint()])
+            end
+        ),
 
         SuccessFun()
     catch {error, E} -> ErrorFun(format(E));
@@ -464,6 +634,10 @@ add_policy(Param, Username) ->
 
 add_policy(VHost, Param, Username) ->
     Key   = maps:get(name,  Param, undefined),
+    case Key of
+      undefined -> exit(rabbit_misc:format("policy in virtual host '~s' has undefined name", [VHost]));
+      _ -> ok
+    end,
     case rabbit_policy:set(
            VHost, Key, maps:get(pattern, Param, undefined),
            case maps:get(definition, Param, undefined) of
@@ -486,8 +660,9 @@ add_vhost(VHost, ActingUser) ->
     Metadata         = rabbit_data_coercion:atomize_keys(maps:get(metadata, VHost, #{})),
     Description      = maps:get(description, VHost, maps:get(description, Metadata, <<"">>)),
     Tags             = maps:get(tags, VHost, maps:get(tags, Metadata, [])),
+    DefaultQueueType = maps:get(default_queue_type, Metadata, undefined),
 
-    rabbit_vhost:put_vhost(Name, Description, Tags, IsTracingEnabled, ActingUser).
+    rabbit_vhost:put_vhost(Name, Description, Tags, DefaultQueueType, IsTracingEnabled, ActingUser).
 
 add_permission(Permission, ActingUser) ->
     rabbit_auth_backend_internal:set_permissions(maps:get(user,      Permission, undefined),
@@ -518,12 +693,17 @@ add_queue_int(_Queue, R = #resource{kind = queue,
     rabbit_log:warning("Skipping import of a queue whose name begins with 'amq.', "
                        "name: ~s, acting user: ~s", [Name, ActingUser]);
 add_queue_int(Queue, Name, ActingUser) ->
-    rabbit_amqqueue:declare(Name,
-                            maps:get(durable,                         Queue, undefined),
-                            maps:get(auto_delete,                     Queue, undefined),
-                            args(maps:get(arguments, Queue, undefined)),
-                            none,
-                            ActingUser).
+    case rabbit_amqqueue:exists(Name) of
+        true ->
+            ok;
+        false ->
+            rabbit_amqqueue:declare(Name,
+                                    maps:get(durable, Queue, undefined),
+                                    maps:get(auto_delete, Queue, undefined),
+                                    args(maps:get(arguments, Queue, undefined)),
+                                    none,
+                                    ActingUser)
+    end.
 
 add_exchange(Exchange, ActingUser) ->
     add_exchange_int(Exchange, r(exchange, Exchange), ActingUser).
@@ -539,17 +719,22 @@ add_exchange_int(_Exchange, R = #resource{kind = exchange,
     rabbit_log:warning("Skipping import of an exchange whose name begins with 'amq.', "
                        "name: ~s, acting user: ~s", [Name, ActingUser]);
 add_exchange_int(Exchange, Name, ActingUser) ->
-    Internal = case maps:get(internal, Exchange, undefined) of
-                   undefined -> false; %% =< 2.2.0
-                   I         -> I
-               end,
-    rabbit_exchange:declare(Name,
-                            rabbit_exchange:check_type(maps:get(type, Exchange, undefined)),
-                            maps:get(durable,                         Exchange, undefined),
-                            maps:get(auto_delete,                     Exchange, undefined),
-                            Internal,
-                            args(maps:get(arguments, Exchange, undefined)),
-                            ActingUser).
+    case rabbit_exchange:exists(Name) of
+        true ->
+            ok;
+        false ->
+            Internal = case maps:get(internal, Exchange, undefined) of
+                           undefined -> false; %% =< 2.2.0
+                           I         -> I
+                       end,
+            rabbit_exchange:declare(Name,
+                                    rabbit_exchange:check_type(maps:get(type, Exchange, undefined)),
+                                    maps:get(durable,                         Exchange, undefined),
+                                    maps:get(auto_delete,                     Exchange, undefined),
+                                    Internal,
+                                    args(maps:get(arguments, Exchange, undefined)),
+                                    ActingUser)
+    end.
 
 add_binding(Binding, ActingUser) ->
     DestType = dest_type(Binding),
@@ -607,10 +792,7 @@ filter_out_existing_queues(Queues) ->
 filter_out_existing_queues(VHost, Queues) ->
     Pred = fun(Queue) ->
                Rec = rv(VHost, queue, <<"name">>, Queue),
-               case rabbit_amqqueue:lookup(Rec) of
-                   {ok, _} -> false;
-                   {error, not_found} -> true
-               end
+               not rabbit_amqqueue:exists(Rec)
            end,
     lists:filter(Pred, Queues).
 
@@ -623,11 +805,11 @@ build_filtered_map([], AccMap) ->
     {ok, AccMap};
 build_filtered_map([Queue|Rest], AccMap0) ->
     {Rec, VHost} = build_queue_data(Queue),
-    case rabbit_amqqueue:lookup(Rec) of
-        {error, not_found} ->
+    case rabbit_amqqueue:exists(Rec) of
+        false ->
             AccMap1 = maps:update_with(VHost, fun(V) -> V + 1 end, 1, AccMap0),
             build_filtered_map(Rest, AccMap1);
-        {ok, _} ->
+        true ->
             build_filtered_map(Rest, AccMap0)
     end.
 
@@ -667,7 +849,8 @@ list_exchanges() ->
     %% applications
     [exchange_definition(X) || X <- lists:filter(fun(#exchange{internal = true}) -> false;
                                                     (#exchange{name = #resource{name = <<>>}}) -> false;
-                                                    (X) -> not rabbit_exchange:is_amq_prefixed(X)
+                                                    (#exchange{name = #resource{name = <<"amq.", _Rest/binary>>}}) -> false;
+                                                    (_) -> true
                                                  end,
                                                  rabbit_exchange:list())].
 

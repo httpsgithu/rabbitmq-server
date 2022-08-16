@@ -2,7 +2,7 @@
 %% License, v. 2.0. If a copy of the MPL was not distributed with this
 %% file, You can obtain one at https://mozilla.org/MPL/2.0/.
 %%
-%% Copyright (c) 2011-2021 VMware, Inc. or its affiliates.  All rights reserved.
+%% Copyright (c) 2011-2022 VMware, Inc. or its affiliates.  All rights reserved.
 %%
 
 -module(unit_config_value_encryption_SUITE).
@@ -122,8 +122,8 @@ do_decrypt_start_app(Config, Passphrase) ->
     %% We expect a failure *after* the decrypting has been done.
     try
         rabbit:start_apps([rabbit_shovel_test], #{rabbit => temporary})
-    catch _:Err ->
-              ct:pal("~s: start_apps failed with ~p", [Err]),
+    catch _:Err:Stacktrace ->
+              ct:pal("start_apps failed with ~p~n~p", [Err, Stacktrace]),
               ok
     end,
     %% Check if the values have been decrypted.

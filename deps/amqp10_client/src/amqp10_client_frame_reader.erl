@@ -2,7 +2,7 @@
 %% License, v. 2.0. If a copy of the MPL was not distributed with this
 %% file, You can obtain one at https://mozilla.org/MPL/2.0/.
 %%
-%% Copyright (c) 2007-2021 VMware, Inc. or its affiliates.  All rights reserved.
+%% Copyright (c) 2007-2022 VMware, Inc. or its affiliates.  All rights reserved.
 %%
 -module(amqp10_client_frame_reader).
 
@@ -138,7 +138,7 @@ handle_event(cast, {unregister_session, _Session, OutgoingChannel, IncomingChann
                          incoming_channels = IncomingChannels1},
     {keep_state, State1};
 handle_event(cast, close, _StateName, State = #state{socket = Socket}) ->
-    close_socket(Socket),
+    _ = close_socket(Socket),
     {stop, normal, State#state{socket = undefined}};
 
 handle_event({call, From}, _Action, _State, _Data) ->

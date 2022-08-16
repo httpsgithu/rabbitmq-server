@@ -2,14 +2,10 @@
 %% License, v. 2.0. If a copy of the MPL was not distributed with this
 %% file, You can obtain one at https://mozilla.org/MPL/2.0/.
 %%
-%% Copyright (c) 2007-2021 VMware, Inc. or its affiliates.  All rights reserved.
+%% Copyright (c) 2007-2022 VMware, Inc. or its affiliates.  All rights reserved.
 %%
 
 -module(rabbit_channel).
-
-%% Transitional step until we can require Erlang/OTP 21 and
-%% use the now recommended try/catch syntax for obtaining the stack trace.
--compile(nowarn_deprecated_function).
 
 %% rabbit_channel processes represent an AMQP 0-9-1 channels.
 %%
@@ -120,11 +116,18 @@
           writer_gc_threshold
          }).
 
--record(pending_ack, {delivery_tag,
+-record(pending_ack, {
+                      %% delivery identifier used by clients
+                      %% to acknowledge and reject deliveries
+                      delivery_tag,
+                      %% consumer tag
                       tag,
                       delivered_at,
-                      queue, %% queue name
-                      msg_id}).
+                      %% queue name
+                      queue,
+                      %% message ID used by queue and message store implementations
+                      msg_id
+                    }).
 
 -record(ch, {cfg :: #conf{},
              %% limiter state, see rabbit_limiter
@@ -742,7 +745,7 @@ handle_cast({mandatory_received, _MsgSeqNo}, State) ->
 
 handle_cast({reject_publish, _MsgSeqNo, QPid} = Evt, State) ->
     %% For backwards compatibility
-    QRef = find_queue_name_from_pid(QPid, State#ch.queue_states),
+    QRef = rabbit_queue_type:find_name_from_pid(QPid, State#ch.queue_states),
     case QRef of
         undefined ->
             %% ignore if no queue could be found for the given pid
@@ -753,7 +756,7 @@ handle_cast({reject_publish, _MsgSeqNo, QPid} = Evt, State) ->
 
 handle_cast({confirm, _MsgSeqNo, QPid} = Evt, State) ->
     %% For backwards compatibility
-    QRef = find_queue_name_from_pid(QPid, State#ch.queue_states),
+    QRef = rabbit_queue_type:find_name_from_pid(QPid, State#ch.queue_states),
     case QRef of
         undefined ->
             %% ignore if no queue could be found for the given pid
@@ -1312,7 +1315,7 @@ handle_method(#'basic.publish'{exchange    = ExchangeNameBin,
                      SeqNo = State0#ch.publish_seqno,
                      {SeqNo, State0#ch{publish_seqno = SeqNo + 1}}
         end,
-    case rabbit_basic:message(ExchangeName, RoutingKey, DecodedContent) of
+    case rabbit_basic:message_no_id(ExchangeName, RoutingKey, DecodedContent) of
         {ok, Message} ->
             Delivery = rabbit_basic:delivery(
                          Mandatory, DoConfirm, Message, MsgSeqNo),
@@ -1342,7 +1345,7 @@ handle_method(#'basic.ack'{delivery_tag = DeliveryTag,
     {Acked, Remaining} = collect_acks(UAMQ, DeliveryTag, Multiple),
     State1 = State#ch{unacked_message_q = Remaining},
     {noreply, case Tx of
-                  none         -> {State2, Actions} = ack(Acked, State1),
+                  none         -> {State2, Actions} = settle_acks(Acked, State1),
                                   handle_queue_actions(Actions, State2);
                   {Msgs, Acks} -> Acks1 = ack_cons(ack, Acked, Acks),
                                   State1#ch{tx = {Msgs, Acks1}}
@@ -1481,7 +1484,7 @@ handle_method(#'basic.consume'{queue        = QueueNameBin,
                       [rabbit_misc:rs(QueueName)]);
                 {error, no_local_stream_replica_available} ->
                     rabbit_misc:protocol_error(
-                      resource_error, "~s does not not have a running local replica",
+                      resource_error, "~s does not have a running local replica",
                       [rabbit_misc:rs(QueueName)])
             end;
         {ok, _} ->
@@ -1718,11 +1721,11 @@ handle_method(#'tx.commit'{}, _, #ch{tx = none}) ->
 
 handle_method(#'tx.commit'{}, _, State = #ch{tx      = {Deliveries, Acks},
                                              limiter = Limiter}) ->
-    State1 = queue_fold(fun deliver_to_queues/2, State, Deliveries),
+    State1 = ?QUEUE:fold(fun deliver_to_queues/2, State, Deliveries),
     Rev = fun (X) -> lists:reverse(lists:sort(X)) end,
     {State2, Actions2} =
         lists:foldl(fun ({ack,     A}, {Acc, Actions}) ->
-                            {Acc0, Actions0} = ack(Rev(A), Acc),
+                            {Acc0, Actions0} = settle_acks(Rev(A), Acc),
                             {Acc0, Actions ++ Actions0};
                         ({Requeue, A}, {Acc, Actions}) ->
                             {Acc0, Actions0} = internal_reject(Requeue, Rev(A), Limiter, Acc),
@@ -2029,37 +2032,43 @@ record_sent(Type, QueueType, Tag, AckRequired,
             end,
     State#ch{unacked_message_q = UAMQ1, next_tag = DeliveryTag + 1}.
 
-%% NB: returns acks in youngest-first order
-collect_acks(Q, 0, true) ->
-    {lists:reverse(?QUEUE:to_list(Q)), ?QUEUE:new()};
-collect_acks(Q, DeliveryTag, Multiple) ->
-    collect_acks([], [], Q, DeliveryTag, Multiple).
+%% Records a client-sent acknowledgement. Handles both single delivery acks
+%% and multi-acks.
+%%
+%% Returns a triple of acknowledged pending acks, remaining pending acks,
+%% and outdated pending acks (if any).
+%% Sorts each group in the youngest-first order (ascending by delivery tag).
+collect_acks(UAMQ, 0, true) ->
+    {lists:reverse(?QUEUE:to_list(UAMQ)), ?QUEUE:new()};
+collect_acks(UAMQ, DeliveryTag, Multiple) ->
+    collect_acks([], [], UAMQ, DeliveryTag, Multiple).
 
-collect_acks(ToAcc, PrefixAcc, Q, DeliveryTag, Multiple) ->
-    case ?QUEUE:out(Q) of
-        {{value, UnackedMsg = #pending_ack{delivery_tag = CurrentDeliveryTag}},
-         QTail} ->
-            if CurrentDeliveryTag == DeliveryTag ->
-                   {[UnackedMsg | ToAcc],
-                    case PrefixAcc of
-                        [] -> QTail;
+collect_acks(AcknowledgedAcc, RemainingAcc, UAMQ, DeliveryTag, Multiple) ->
+    case ?QUEUE:out(UAMQ) of
+        {{value, UnackedMsg = #pending_ack{delivery_tag = CurrentDT}},
+         UAMQTail} ->
+            if CurrentDT == DeliveryTag ->
+                   {[UnackedMsg | AcknowledgedAcc],
+                    case RemainingAcc of
+                        [] -> UAMQTail;
                         _  -> ?QUEUE:join(
-                                 ?QUEUE:from_list(lists:reverse(PrefixAcc)),
-                                 QTail)
+                                 ?QUEUE:from_list(lists:reverse(RemainingAcc)),
+                                 UAMQTail)
                     end};
                Multiple ->
-                    collect_acks([UnackedMsg | ToAcc], PrefixAcc,
-                                 QTail, DeliveryTag, Multiple);
+                    collect_acks([UnackedMsg | AcknowledgedAcc], RemainingAcc,
+                                 UAMQTail, DeliveryTag, Multiple);
                true ->
-                    collect_acks(ToAcc, [UnackedMsg | PrefixAcc],
-                                 QTail, DeliveryTag, Multiple)
+                    collect_acks(AcknowledgedAcc, [UnackedMsg | RemainingAcc],
+                                 UAMQTail, DeliveryTag, Multiple)
             end;
         {empty, _} ->
             precondition_failed("unknown delivery tag ~w", [DeliveryTag])
     end.
 
-%% NB: Acked is in youngest-first order
-ack(Acked, State = #ch{queue_states = QueueStates0}) ->
+%% Settles (acknowledges) messages at the queue replica process level.
+%% This happens in the youngest-first order (ascending by delivery tag).
+settle_acks(Acks, State = #ch{queue_states = QueueStates0}) ->
     {QueueStates, Actions} =
         foreach_per_queue(
           fun ({QRef, CTag}, MsgIds, {Acc0, ActionsAcc0}) ->
@@ -2071,8 +2080,8 @@ ack(Acked, State = #ch{queue_states = QueueStates0}) ->
                       {protocol_error, ErrorType, Reason, ReasonArgs} ->
                           rabbit_misc:protocol_error(ErrorType, Reason, ReasonArgs)
                   end
-          end, Acked, {QueueStates0, []}),
-    ok = notify_limiter(State#ch.limiter, Acked),
+          end, Acks, {QueueStates0, []}),
+    ok = notify_limiter(State#ch.limiter, Acks),
     {State#ch{queue_states = QueueStates}, Actions}.
 
 incr_queue_stats(QName, MsgIds, State = #ch{queue_states = QueueStates}) ->
@@ -2164,23 +2173,17 @@ deliver_to_queues({Delivery = #delivery{message    = Message = #basic_message{ex
                                         mandatory  = Mandatory,
                                         confirm    = Confirm,
                                         msg_seq_no = MsgSeqNo},
-                   _RoutedToQueueNames = [QName]}, State0 = #ch{queue_states = QueueStates0}) -> %% optimisation when there is one queue
-    AllNames = case rabbit_amqqueue:lookup(QName) of
-        {ok, Q0} ->
-           case amqqueue:get_options(Q0) of
-                #{extra_bcc := BCC} -> [QName, rabbit_misc:r(QName#resource.virtual_host, queue, BCC)];
-                _                   -> [QName]
-            end;
-        _ -> []
-    end,
-    Qs = rabbit_amqqueue:lookup(AllNames),
+                   RoutedToQueueNames = [QName]}, State0 = #ch{queue_states = QueueStates0}) -> %% optimisation when there is one queue
+    Qs0 = rabbit_amqqueue:lookup(RoutedToQueueNames),
+    Qs = rabbit_amqqueue:prepend_extra_bcc(Qs0),
+    QueueNames = lists:map(fun amqqueue:get_name/1, Qs),
     case rabbit_queue_type:deliver(Qs, Delivery, QueueStates0) of
         {ok, QueueStates, Actions}  ->
             rabbit_global_counters:messages_routed(amqp091, erlang:min(1, length(Qs))),
             %% NB: the order here is important since basic.returns must be
             %% sent before confirms.
             ok = process_routing_mandatory(Mandatory, Qs, Message, State0),
-            State1 = process_routing_confirm(Confirm, AllNames, MsgSeqNo, XName, State0),
+            State1 = process_routing_confirm(Confirm, QueueNames, MsgSeqNo, XName, State0),
             %% Actions must be processed after registering confirms as actions may
             %% contain rejections of publishes
             State = handle_queue_actions(Actions, State1#ch{queue_states = QueueStates}),
@@ -2209,20 +2212,15 @@ deliver_to_queues({Delivery = #delivery{message    = Message = #basic_message{ex
                                         msg_seq_no = MsgSeqNo},
                    RoutedToQueueNames}, State0 = #ch{queue_states = QueueStates0}) ->
     Qs0 = rabbit_amqqueue:lookup(RoutedToQueueNames),
-    AllQueueNames = lists:map(fun amqqueue:get_name/1, Qs0),
-    AllExtraBCCs  = infer_extra_bcc(Qs0),
-    %% Collect implicit BCC targets these queues may have
-    Qs = case AllExtraBCCs of
-            []         -> Qs0;
-            ExtraNames -> Qs0 ++ rabbit_amqqueue:lookup(ExtraNames)
-         end,
+    Qs = rabbit_amqqueue:prepend_extra_bcc(Qs0),
+    QueueNames = lists:map(fun amqqueue:get_name/1, Qs),
     case rabbit_queue_type:deliver(Qs, Delivery, QueueStates0) of
         {ok, QueueStates, Actions}  ->
             rabbit_global_counters:messages_routed(amqp091, length(Qs)),
             %% NB: the order here is important since basic.returns must be
             %% sent before confirms.
             ok = process_routing_mandatory(Mandatory, Qs, Message, State0),
-            State1 = process_routing_confirm(Confirm, AllQueueNames,
+            State1 = process_routing_confirm(Confirm, QueueNames,
                                              MsgSeqNo, XName, State0),
             %% Actions must be processed after registering confirms as actions may
             %% contain rejections of publishes
@@ -2231,7 +2229,7 @@ deliver_to_queues({Delivery = #delivery{message    = Message = #basic_message{ex
                 fine ->
                     ?INCR_STATS(exchange_stats, XName, 1, publish),
                     [?INCR_STATS(queue_exchange_stats, {QName, XName}, 1, publish)
-                     || QName <- AllQueueNames];
+                     || QName <- QueueNames];
                 _ ->
                     ok
             end,
@@ -2242,28 +2240,6 @@ deliver_to_queues({Delivery = #delivery{message    = Message = #basic_message{ex
               "Stream coordinator unavailable for ~s",
               [rabbit_misc:rs(Resource)])
     end.
-
--spec infer_extra_bcc([amqqueue:amqqueue()]) -> [rabbit_amqqueue:name()].
-infer_extra_bcc([]) ->
-    [];
-infer_extra_bcc([Q]) ->
-    case amqqueue:get_options(Q) of
-         #{extra_bcc := BCC} ->
-             #resource{virtual_host = VHost} = amqqueue:get_name(Q),
-             [rabbit_misc:r(VHost, queue, BCC)];
-         _                   ->
-             []
-     end;
-infer_extra_bcc(Qs) ->
-    lists:foldl(fun(Q, Acc) ->
-         case amqqueue:get_options(Q) of
-             #{extra_bcc := BCC} ->
-                 #resource{virtual_host = VHost} = amqqueue:get_name(Q),
-                [rabbit_misc:r(VHost, queue, BCC) | Acc];
-             _                   ->
-                 Acc
-         end
-    end, [], Qs).
 
 process_routing_mandatory(_Mandatory = true,
                           _RoutedToQs = [],
@@ -2543,13 +2519,18 @@ handle_method(#'queue.declare'{queue       = QueueNameBin,
                                exclusive   = ExclusiveDeclare,
                                auto_delete = AutoDelete,
                                nowait      = NoWait,
-                               arguments   = Args} = Declare,
+                               arguments   = Args0} = Declare,
               ConnPid, AuthzContext, CollectorPid, VHostPath,
               #user{username = Username} = User) ->
     Owner = case ExclusiveDeclare of
                 true  -> ConnPid;
                 false -> none
             end,
+    Args = rabbit_amqqueue:augment_declare_args(VHostPath,
+                                                DurableDeclare,
+                                                ExclusiveDeclare,
+                                                AutoDelete,
+                                                Args0),
     StrippedQueueNameBin = strip_cr_lf(QueueNameBin),
     Durable = DurableDeclare andalso not ExclusiveDeclare,
     ActualNameBin = case StrippedQueueNameBin of
@@ -2843,26 +2824,20 @@ get_operation_timeout_and_deadline() ->
     Deadline =  now_millis() + Timeout,
     {Timeout, Deadline}.
 
-queue_fold(Fun, Acc, Queue) ->
-    case ?QUEUE:out(Queue) of
-        {empty, _Queue}      -> Acc;
-        {{value, Item}, Queue1} -> queue_fold(Fun, Fun(Item, Acc), Queue1)
-    end.
-
 evaluate_consumer_timeout(State0 = #ch{cfg = #conf{channel = Channel,
                                                    consumer_timeout = Timeout},
                                        unacked_message_q = UAMQ}) ->
     Now = os:system_time(millisecond),
-    case ?QUEUE:peek(UAMQ) of
-        {value, #pending_ack{delivery_tag = ConsumerTag,
-                             delivered_at = Time}}
+    case ?QUEUE:get(UAMQ, empty) of
+        #pending_ack{delivery_tag = ConsumerTag,
+                     delivered_at = Time}
           when is_integer(Timeout)
                andalso Time < Now - Timeout ->
             rabbit_log_channel:warning("Consumer ~s on channel ~w has timed out "
                                        "waiting for delivery acknowledgement. Timeout used: ~p ms. "
                                        "This timeout value can be configured, see consumers doc guide to learn more",
                                        [rabbit_data_coercion:to_binary(ConsumerTag),
-                                       Channel, Timeout]),
+                                        Channel, Timeout]),
             Ex = rabbit_misc:amqp_error(precondition_failed,
                                         "delivery acknowledgement on channel ~w timed out. "
                                         "Timeout value used: ~p ms. "
@@ -2908,30 +2883,6 @@ handle_queue_actions(Actions, #ch{} = State0) ->
 
       end, State0, Actions).
 
-find_queue_name_from_pid(Pid, QStates) when is_pid(Pid) ->
-    Fun = fun(K, _V, undefined) ->
-                  case rabbit_amqqueue:lookup(K) of
-                      {error, not_found} ->
-                          undefined;
-                      {ok, Q} ->
-                          Pids = get_queue_pids(Q),
-                          case lists:member(Pid, Pids) of
-                              true ->
-                                  K;
-                              false ->
-                                  undefined
-                          end
-                  end;
-             (_K, _V, Acc) ->
-                  Acc
-          end,
-    rabbit_queue_type:fold_state(Fun, undefined, QStates).
-
-get_queue_pids(Q) when ?amqqueue_is_quorum(Q) ->
-    [amqqueue:get_leader(Q)];
-get_queue_pids(Q) ->
-    [amqqueue:get_pid(Q) | amqqueue:get_slave_pids(Q)].
-
 find_queue_name_from_quorum_name(Name, QStates) ->
     Fun = fun(K, _V, undefined) ->
                   {ok, Q} = rabbit_amqqueue:lookup(K),
@@ -2940,7 +2891,9 @@ find_queue_name_from_quorum_name(Name, QStates) ->
                           amqqueue:get_name(Q);
                       _ ->
                           undefined
-                  end
+                  end;
+             (_, _, Acc) ->
+                  Acc
           end,
     rabbit_queue_type:fold_state(Fun, undefined, QStates).
 

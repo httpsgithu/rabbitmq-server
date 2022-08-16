@@ -19,10 +19,6 @@
 
 -behaviour('Elixir.RabbitMQ.CLI.CommandBehaviour').
 
--ignore_xref([{'Elixir.RabbitMQ.CLI.DefaultOutput', output, 1},
-              {'Elixir.RabbitMQ.CLI.Core.Helpers', cli_acting_user, 0},
-              {'Elixir.RabbitMQ.CLI.Core.ExitCodes', exit_software, 0}]).
-
 -export([scopes/0,
          usage/0,
          usage_additional/0,
@@ -99,6 +95,10 @@ validate_stream_arguments(#{stream_max_segment_size_bytes := Value} =
 validate_stream_arguments(#{leader_locator := <<"client-local">>} =
                               Opts) ->
     validate_stream_arguments(maps:remove(leader_locator, Opts));
+validate_stream_arguments(#{leader_locator := <<"balanced">>} =
+                              Opts) ->
+    validate_stream_arguments(maps:remove(leader_locator, Opts));
+%% 'random' and 'least-leaders' are deprecated and get mapped to 'balanced'
 validate_stream_arguments(#{leader_locator := <<"random">>} = Opts) ->
     validate_stream_arguments(maps:remove(leader_locator, Opts));
 validate_stream_arguments(#{leader_locator := <<"least-leaders">>} =
@@ -107,7 +107,7 @@ validate_stream_arguments(#{leader_locator := <<"least-leaders">>} =
 validate_stream_arguments(#{leader_locator := _}) ->
     {validation_failure,
      "Invalid value for --leader-locator, valid values "
-     "are client-local, random, least-leaders."};
+     "are client-local, balanced."};
 validate_stream_arguments(#{initial_cluster_size := Value} = Opts) ->
     try
         case rabbit_data_coercion:to_integer(Value) of
@@ -160,8 +160,7 @@ usage_additional() ->
       "example values: 500mb, 1gb."],
      ["--leader-locator <leader-locator>",
       "Leader locator strategy for partition streams, "
-      "possible values are client-local, least-leaders, "
-      "random."],
+      "possible values are client-local, balanced."],
      ["--initial-cluster-size <initial-cluster-size>",
       "The initial cluster size of partition streams."]].
 

@@ -2,7 +2,7 @@
 %% License, v. 2.0. If a copy of the MPL was not distributed with this
 %% file, You can obtain one at https://mozilla.org/MPL/2.0/.
 %%
-%% Copyright (c) 2007-2021 VMware, Inc. or its affiliates.  All rights reserved.
+%% Copyright (c) 2007-2022 VMware, Inc. or its affiliates.  All rights reserved.
 %%
 
 -module(rabbit_exchange).
@@ -10,12 +10,12 @@
 -include_lib("rabbit_common/include/rabbit_framing.hrl").
 
 -export([recover/1, policy_changed/2, callback/4, declare/7,
-         assert_equivalence/6, assert_args_equivalence/2, check_type/1,
+         assert_equivalence/6, assert_args_equivalence/2, check_type/1, exists/1,
          lookup/1, lookup_many/1, lookup_or_die/1, list/0, list/1, lookup_scratch/2,
          update_scratch/3, update_decorators/1, immutable/1,
          info_keys/0, info/1, info/2, info_all/1, info_all/2, info_all/4,
          route/2, delete/3, validate_binding/2, count/0]).
--export([list_names/0, is_amq_prefixed/1]).
+-export([list_names/0]).
 %% these must be run inside a mnesia tx
 -export([maybe_auto_delete/2, serial/1, peek_serial/1, update/2]).
 
@@ -93,18 +93,6 @@ serial(#exchange{name = XName} = X) ->
         (false) -> none
     end.
 
--spec is_amq_prefixed(rabbit_types:exchange() | binary()) -> boolean().
-
-is_amq_prefixed(Name) when is_binary(Name) ->
-    case re:run(Name, <<"^amq\.">>) of
-        nomatch    -> false;
-        {match, _} -> true
-    end;
-is_amq_prefixed(#exchange{name = #resource{name = <<>>}}) ->
-    false;
-is_amq_prefixed(#exchange{name = #resource{name = Name}}) ->
-    is_amq_prefixed(Name).
-
 -spec declare
         (name(), type(), boolean(), boolean(), boolean(),
          rabbit_framing:amqp_table(), rabbit_types:username())
@@ -167,8 +155,7 @@ store(X = #exchange{durable = false}) ->
 
 store_ram(X) ->
     X1 = rabbit_exchange_decorator:set(X),
-    ok = mnesia:write(rabbit_exchange, rabbit_exchange_decorator:set(X1),
-                      write),
+    ok = mnesia:write(rabbit_exchange, X1, write),
     X1.
 
 %% Used with binaries sent over the wire; the type may not exist.
@@ -219,6 +206,10 @@ assert_args_equivalence(#exchange{ name = Name, arguments = Args },
     %% "alternate-exchange".
     rabbit_misc:assert_args_equivalence(Args, RequiredArgs, Name,
                                         [<<"alternate-exchange">>]).
+
+-spec exists(name()) -> boolean().
+exists(Name) ->
+    ets:member(rabbit_exchange, Name).
 
 -spec lookup
         (name()) -> rabbit_types:ok(rabbit_types:exchange()) |
@@ -412,7 +403,7 @@ route(#exchange{name = #resource{virtual_host = VHost, name = RName} = XName,
         <<>> ->
             RKsSorted = lists:usort(RKs),
             [rabbit_channel:deliver_reply(RK, Delivery) ||
-                RK <- RKsSorted, virtual_reply_queue(RK)],
+             RK <- RKsSorted, virtual_reply_queue(RK)],
             [rabbit_misc:r(VHost, queue, RK) || RK <- RKsSorted,
                                                 not virtual_reply_queue(RK)];
         _ ->
@@ -551,7 +542,7 @@ internal_delete(X = #exchange{name = XName}, OnlyDurable, RemoveBindingsForSourc
     ok = mnesia:delete({rabbit_exchange_serial, XName}),
     mnesia:delete({rabbit_durable_exchange, XName}),
     Bindings = case RemoveBindingsForSource of
-        true  -> rabbit_binding:remove_for_source(XName);
+        true  -> rabbit_binding:remove_for_source(X);
         false -> []
     end,
     {deleted, X, Bindings, rabbit_binding:remove_for_destination(

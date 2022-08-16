@@ -11,14 +11,14 @@
 %% The Original Code is RabbitMQ.
 %%
 %% The Initial Developer of the Original Code is Pivotal Software, Inc.
-%% Copyright (c) 2020-2021 VMware, Inc. or its affiliates.  All rights reserved.
+%% Copyright (c) 2020-2022 VMware, Inc. or its affiliates.  All rights reserved.
 %%
 
 -module(rabbit_stream_metrics_gc).
 
 -behaviour(gen_server).
 
--include_lib("rabbitmq_stream/include/rabbit_stream_metrics.hrl").
+-include("rabbit_stream_metrics.hrl").
 
 -record(state, {timer, interval}).
 

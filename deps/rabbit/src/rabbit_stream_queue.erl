@@ -2,7 +2,7 @@
 %% License, v. 2.0. If a copy of the MPL was not distributed with this
 %% file, You can obtain one at https://mozilla.org/MPL/2.0/.
 %%
-%% Copyright (c) 2007-2021 VMware, Inc. or its affiliates.  All rights reserved.
+%% Copyright (c) 2007-2022 VMware, Inc. or its affiliates.  All rights reserved.
 %%
 
 -module(rabbit_stream_queue).
@@ -10,6 +10,7 @@
 -behaviour(rabbit_queue_type).
 
 -export([is_enabled/0,
+         is_compatible/3,
          declare/2,
          delete/4,
          purge/1,
@@ -42,14 +43,18 @@
 -export([parse_offset_arg/1]).
 
 -export([status/2,
-         tracking_status/2]).
+         tracking_status/2,
+         get_overview/1]).
+
+-export([check_max_segment_size_bytes/1]).
 
 -include_lib("rabbit_common/include/rabbit.hrl").
 -include("amqqueue.hrl").
 
 -define(INFO_KEYS, [name, durable, auto_delete, arguments, leader, members, online, state,
                     messages, messages_ready, messages_unacknowledged, committed_offset,
-                    policy, operator_policy, effective_policy_definition, type, memory]).
+                    policy, operator_policy, effective_policy_definition, type, memory,
+                    consumers]).
 
 -type appender_seq() :: non_neg_integer().
 
@@ -83,33 +88,60 @@
 is_enabled() ->
     rabbit_feature_flags:is_enabled(stream_queue).
 
+-spec is_compatible(boolean(), boolean(), boolean()) -> boolean().
+is_compatible(_Durable = true,
+              _Exclusive = false,
+              _AutoDelete = false) ->
+    true;
+is_compatible(_, _, _) ->
+    false.
+
+
 -spec declare(amqqueue:amqqueue(), node()) ->
     {'new' | 'existing', amqqueue:amqqueue()} |
     {protocol_error, Type :: atom(), Reason :: string(), Args :: term()}.
-declare(Q0, Node) when ?amqqueue_is_stream(Q0) ->
+declare(Q0, _Node) when ?amqqueue_is_stream(Q0) ->
     case rabbit_queue_type_util:run_checks(
            [fun rabbit_queue_type_util:check_auto_delete/1,
             fun rabbit_queue_type_util:check_exclusive/1,
-            fun rabbit_queue_type_util:check_non_durable/1],
+            fun rabbit_queue_type_util:check_non_durable/1,
+            fun rabbit_stream_queue:check_max_segment_size_bytes/1],
            Q0) of
         ok ->
-            create_stream(Q0, Node);
+            create_stream(Q0);
         Err ->
             Err
     end.
 
-create_stream(Q0, Node) ->
+check_max_segment_size_bytes(Q) ->
+    Args = amqqueue:get_arguments(Q),
+    case rabbit_misc:table_lookup(Args, <<"x-stream-max-segment-size-bytes">>) of
+        undefined ->
+            ok;
+        {_Type, Val} when Val > ?MAX_STREAM_MAX_SEGMENT_SIZE ->
+            {protocol_error, precondition_failed, "Exceeded max value for x-stream-max-segment-size-bytes",
+             []};
+        _ ->
+            ok
+    end.
+
+create_stream(Q0) ->
     Arguments = amqqueue:get_arguments(Q0),
     QName = amqqueue:get_name(Q0),
     Opts = amqqueue:get_options(Q0),
     ActingUser = maps:get(user, Opts, ?UNKNOWN_USER),
-    Conf0 = make_stream_conf(Node, Q0),
-    Conf = apply_leader_locator_strategy(Conf0),
-    #{leader_node := LeaderNode} = Conf,
+    Conf0 = make_stream_conf(Q0),
+    InitialClusterSize = initial_cluster_size(
+                           args_policy_lookup(<<"initial-cluster-size">>,
+                                              fun policy_precedence/2, Q0)),
+    {Leader, Followers} = rabbit_queue_location:select_leader_and_followers(Q0, InitialClusterSize),
+    Conf = maps:merge(Conf0, #{nodes => [Leader | Followers],
+                               leader_node => Leader,
+                               replica_nodes => Followers}),
     Q1 = amqqueue:set_type_state(Q0, Conf),
     case rabbit_amqqueue:internal_declare(Q1, false) of
         {created, Q} ->
-            case rabbit_stream_coordinator:new_stream(Q, LeaderNode) of
+            case rabbit_stream_coordinator:new_stream(Q, Leader) of
                 {ok, {ok, LeaderPid}, _} ->
                     %% update record with leader pid
                     set_leader_pid(LeaderPid, amqqueue:get_name(Q)),
@@ -199,6 +231,7 @@ consume(Q, Spec, QState0) when ?amqqueue_is_stream(Q) ->
                 {error, _} = Err ->
                     Err;
                 {ok, OffsetSpec} ->
+                    rabbit_stream_coordinator:register_local_member_listener(Q),
                     rabbit_core_metrics:consumer_created(ChPid, ConsumerTag, ExclusiveConsume,
                                                          not NoAck, QName,
                                                          ConsumerPrefetchCount, false,
@@ -283,22 +316,26 @@ begin_stream(#stream_client{name = QName, readers = Readers0} = State0,
                            log = Seg0,
                            max = Max},
             Actions = [],
-            %% TODO: we need to monitor the local pid in case the stream is
-            %% restarted
             {ok, State#stream_client{local_pid = LocalPid,
                                      readers = Readers0#{Tag => Str0}}, Actions}
     end.
 
 cancel(_Q, ConsumerTag, OkMsg, ActingUser, #stream_client{readers = Readers0,
                                                           name = QName} = State) ->
-    Readers = maps:remove(ConsumerTag, Readers0),
-    rabbit_core_metrics:consumer_deleted(self(), ConsumerTag, QName),
-    rabbit_event:notify(consumer_deleted, [{consumer_tag, ConsumerTag},
-                                           {channel, self()},
-                                           {queue, QName},
-                                           {user_who_performed_action, ActingUser}]),
-    maybe_send_reply(self(), OkMsg),
-    {ok, State#stream_client{readers = Readers}}.
+    case maps:take(ConsumerTag, Readers0) of
+        {#stream{log = Log}, Readers} ->
+            ok = close_log(Log),
+            rabbit_core_metrics:consumer_deleted(self(), ConsumerTag, QName),
+            rabbit_event:notify(consumer_deleted,
+                                [{consumer_tag, ConsumerTag},
+                                 {channel, self()},
+                                 {queue, QName},
+                                 {user_who_performed_action, ActingUser}]),
+            maybe_send_reply(self(), OkMsg),
+            {ok, State#stream_client{readers = Readers}};
+        error ->
+            {ok, State}
+    end.
 
 credit(CTag, Credit, Drain, #stream_client{readers = Readers0,
                                            name = Name,
@@ -406,7 +443,30 @@ handle_event({osiris_offset, _From, _Offs},
                   || {Tag, _LeaderPid, OffsetMsg} <- TagMsgs],
     {ok, State#stream_client{readers = Readers}, Deliveries};
 handle_event({stream_leader_change, Pid}, State) ->
-    {ok, update_leader_pid(Pid, State), []}.
+    {ok, update_leader_pid(Pid, State), []};
+handle_event({stream_local_member_change, Pid}, #stream_client{local_pid = P} = State)
+  when P == Pid ->
+    {ok, State, []};
+handle_event({stream_local_member_change, Pid}, State = #stream_client{name = QName,
+                                                                       readers = Readers0}) ->
+    rabbit_log:debug("Local member change event for ~p", [QName]),
+    Readers1 = maps:fold(fun(T, #stream{log = Log0} = S0, Acc) ->
+                                 Offset = osiris_log:next_offset(Log0),
+                                 osiris_log:close(Log0),
+                                 CounterSpec = {{?MODULE, QName, self()}, []},
+                                 rabbit_log:debug("Re-creating Osiris reader for consumer ~p at offset ~p", [T, Offset]),
+                                 {ok, Log1} = osiris:init_reader(Pid, Offset, CounterSpec),
+                                 NextOffset = osiris_log:next_offset(Log1) - 1,
+                                 rabbit_log:debug("Registering offset listener at offset ~p", [NextOffset]),
+                                 osiris:register_offset_listener(Pid, NextOffset),
+                                 S1 = S0#stream{listening_offset = NextOffset,
+                                                log = Log1},
+                                 Acc#{T => S1}
+
+                         end, #{}, Readers0),
+    {ok, State#stream_client{local_pid = Pid, readers = Readers1}, []};
+handle_event(eol, _State) ->
+    eol.
 
 is_recoverable(Q) ->
     Node = node(),
@@ -439,7 +499,7 @@ settle(_, _, _, #stream_client{name = Name}) ->
      "basic.nack and basic.reject not supported by stream queues ~s",
      [rabbit_misc:rs(Name)]}.
 
-info(Q, all_items) ->
+info(Q, all_keys) ->
     info(Q, ?INFO_KEYS);
 info(Q, Items) ->
     lists:foldr(fun(Item, Acc) ->
@@ -459,6 +519,22 @@ i(leader, Q) when ?is_amqqueue(Q) ->
 i(members, Q) when ?is_amqqueue(Q) ->
     #{nodes := Nodes} = amqqueue:get_type_state(Q),
     Nodes;
+i(consumers, Q) when ?is_amqqueue(Q) ->
+    QName = amqqueue:get_name(Q),
+    #{nodes := Nodes} = amqqueue:get_type_state(Q),
+    Spec = [{{{'$1', '_', '_'}, '_', '_', '_', '_', '_', '_'}, [{'==', {QName}, '$1'}], [true]}],
+    lists:foldl(fun(N, Acc) ->
+                        case rabbit_misc:rpc_call(N,
+                                                  ets,
+                                                  select_count,
+                                                  [consumer_created, Spec],
+                                                  10000) of
+                            Count when is_integer(Count) ->
+                                Acc + Count;
+                            _ ->
+                                Acc
+                        end
+                end, 0, Nodes);
 i(memory, Q) when ?is_amqqueue(Q) ->
     %% Return writer memory. It's not the full memory usage (we also have replica readers on
     %% the writer node), but might be good enough
@@ -517,9 +593,13 @@ i(committed_offset, Q) ->
     %% TODO should it be on a metrics table?
     %% The queue could be removed between the list() and this call
     %% to retrieve the overview. Let's default to '' if it's gone.
-    Data = osiris_counters:overview(),
-    maps:get(committed_offset,
-             maps:get({osiris_writer, amqqueue:get_name(Q)}, Data, #{}), '');
+    Key = {osiris_writer, amqqueue:get_name(Q)},
+    case osiris_counters:overview(Key) of
+        undefined ->
+            '';
+        Data ->
+            maps:get(committed_offset, Data, '')
+    end;
 i(policy, Q) ->
     case rabbit_policy:name(Q) of
         none   -> '';
@@ -558,7 +638,6 @@ status(Vhost, QueueName) ->
             {error, quorum_queue_not_supported};
         {ok, Q} when ?amqqueue_is_stream(Q) ->
             _Pid = amqqueue:get_pid(Q),
-            % Max = maps:get(max_segment_size_bytes, Conf, osiris_log:get_default_max_segment_size_bytes()),
             [begin
                  [{role, Role},
                   get_key(node, C),
@@ -580,32 +659,30 @@ get_counters(Q) ->
     {ok, Members} = rabbit_stream_coordinator:members(StreamId),
     QName = amqqueue:get_name(Q),
     Counters = [begin
-                    Data = safe_get_overview(Node),
-                    get_counter(QName, Data, #{node => Node})
+                    safe_get_overview(Node, QName)
                 end || Node <- maps:keys(Members)],
     lists:filter(fun (X) -> X =/= undefined end, Counters).
 
-safe_get_overview(Node) ->
-    case rpc:call(Node, osiris_counters, overview, []) of
+safe_get_overview(Node, QName) ->
+    case rpc:call(Node, ?MODULE, get_overview, [QName]) of
         {badrpc, _} ->
             #{node => Node};
-        Data ->
-            Data
+        Result ->
+            Result
     end.
 
-get_counter(QName, Data, Add) ->
-    case maps:get({osiris_writer, QName}, Data, undefined) of
+get_overview(QName) ->
+    case osiris_counters:overview({osiris_writer, QName}) of
         undefined ->
-            case maps:get({osiris_replica, QName}, Data, undefined) of
+            case osiris_counters:overview({osiris_replica, QName}) of
                 undefined ->
-                    {undefined, Add};
+                    undefined;
                 M ->
-                    {replica, maps:merge(Add, M)}
+                    {replica, M#{node => node()}}
             end;
         M ->
-            {writer, maps:merge(Add, M)}
+            {writer, M#{node => node()}}
     end.
-
 
 -spec tracking_status(rabbit_types:vhost(), Name :: rabbit_misc:resource_name()) ->
     [[{atom(), term()}]] | {error, term()}.
@@ -635,13 +712,8 @@ tracking_status(Vhost, QueueName) ->
 
 readers(QName) ->
     try
-        Data = osiris_counters:overview(),
-        Readers = case maps:get({osiris_writer, QName}, Data, not_found) of
-                      not_found ->
-                          maps:get(readers, maps:get({osiris_replica, QName}, Data, #{}), 0);
-                      Map ->
-                          maps:get(readers, Map, 0)
-                  end,
+        {_Role, Counters} = get_overview(QName),
+        Readers = maps:get(readers, Counters, 0),
         {node(), Readers}
     catch
         _:_ ->
@@ -748,21 +820,13 @@ delete_replica(VHost, Name, Node) ->
             E
     end.
 
-make_stream_conf(Node, Q) ->
+make_stream_conf(Q) ->
     QName = amqqueue:get_name(Q),
     Name = stream_name(QName),
     %% MaxLength = args_policy_lookup(<<"max-length">>, policy_precedence/2, Q),
     MaxBytes = args_policy_lookup(<<"max-length-bytes">>, fun policy_precedence/2, Q),
     MaxAge = max_age(args_policy_lookup(<<"max-age">>, fun policy_precedence/2, Q)),
     MaxSegmentSizeBytes = args_policy_lookup(<<"stream-max-segment-size-bytes">>, fun policy_precedence/2, Q),
-    LeaderLocator = queue_leader_locator(args_policy_lookup(<<"queue-leader-locator">>,
-                                                            fun policy_precedence/2, Q)),
-    InitialClusterSize = initial_cluster_size(
-                           args_policy_lookup(<<"initial-cluster-size">>,
-                                              fun policy_precedence/2, Q)),
-    Replicas0 = rabbit_nodes:all() -- [Node],
-    %% TODO: try to avoid nodes that are not connected
-    Replicas = select_stream_nodes(InitialClusterSize - 1, Replicas0),
     Formatter = {?MODULE, format_osiris_event, [QName]},
     Retention = lists:filter(fun({_, R}) ->
                                      R =/= undefined
@@ -772,29 +836,8 @@ make_stream_conf(Node, Q) ->
                    #{reference => QName,
                      name => Name,
                      retention => Retention,
-                     nodes => [Node | Replicas],
-                     leader_locator_strategy => LeaderLocator,
-                     leader_node => Node,
-                     replica_nodes => Replicas,
                      event_formatter => Formatter,
                      epoch => 1}).
-
-select_stream_nodes(Size, All) when length(All) =< Size ->
-    All;
-select_stream_nodes(Size, All) ->
-    Node = node(),
-    case lists:member(Node, All) of
-        true ->
-            select_stream_nodes(Size - 1, lists:delete(Node, All), [Node]);
-        false ->
-            select_stream_nodes(Size, All, [])
-    end.
-
-select_stream_nodes(0, _, Selected) ->
-    Selected;
-select_stream_nodes(Size, Rest, Selected) ->
-    S = lists:nth(rand:uniform(length(Rest)), Rest),
-    select_stream_nodes(Size - 1, lists:delete(S, Rest), [S | Selected]).
 
 update_stream_conf(undefined, #{} = Conf) ->
     Conf;
@@ -824,9 +867,6 @@ max_age(Bin) when is_binary(Bin) ->
 max_age(Age) ->
     Age.
 
-queue_leader_locator(undefined) -> <<"client-local">>;
-queue_leader_locator(Val) -> Val.
-
 initial_cluster_size(undefined) ->
     length(rabbit_nodes:all());
 initial_cluster_size(Val) ->
@@ -844,15 +884,13 @@ recover(Q) ->
     {ok, Q}.
 
 check_queue_exists_in_local_node(Q) ->
-    Conf = amqqueue:get_type_state(Q),
-    AllNodes = [maps:get(leader_node, Conf) |
-                maps:get(replica_nodes, Conf)],
-    case lists:member(node(), AllNodes) of
-        true ->
+    #{name := StreamId} = amqqueue:get_type_state(Q),
+    case rabbit_stream_coordinator:local_pid(StreamId) of
+        {ok, Pid} when is_pid(Pid) ->
             ok;
-        false ->
+        _ ->
             {protocol_error, precondition_failed,
-             "queue '~s' does not a have a replica on the local node",
+             "queue '~s' does not have a replica on the local node",
              [rabbit_misc:rs(amqqueue:get_name(Q))]}
     end.
 
@@ -946,22 +984,21 @@ msg_to_iodata(#basic_message{exchange_name = #resource{name = Exchange},
     rabbit_msg_record:to_iodata(R).
 
 capabilities() ->
-    #{unsupported_policies =>
-          [ %% Classic policies
-            <<"expires">>, <<"message-ttl">>, <<"dead-letter-exchange">>,
-            <<"dead-letter-routing-key">>, <<"max-length">>,
-            <<"max-in-memory-length">>, <<"max-in-memory-bytes">>,
-            <<"max-priority">>, <<"overflow">>, <<"queue-mode">>,
-            <<"single-active-consumer">>, <<"delivery-limit">>,
-            <<"ha-mode">>, <<"ha-params">>, <<"ha-sync-mode">>,
-            <<"ha-promote-on-shutdown">>, <<"ha-promote-on-failure">>,
-            <<"queue-master-locator">>],
-      queue_arguments => [<<"x-dead-letter-exchange">>, <<"x-dead-letter-routing-key">>,
-                          <<"x-max-length">>, <<"x-max-length-bytes">>,
-                          <<"x-single-active-consumer">>, <<"x-queue-type">>,
+    #{unsupported_policies => [%% Classic policies
+                               <<"expires">>, <<"message-ttl">>, <<"dead-letter-exchange">>,
+                               <<"dead-letter-routing-key">>, <<"max-length">>,
+                               <<"max-in-memory-length">>, <<"max-in-memory-bytes">>,
+                               <<"max-priority">>, <<"overflow">>, <<"queue-mode">>,
+                               <<"single-active-consumer">>, <<"delivery-limit">>,
+                               <<"ha-mode">>, <<"ha-params">>, <<"ha-sync-mode">>,
+                               <<"ha-promote-on-shutdown">>, <<"ha-promote-on-failure">>,
+                               <<"queue-master-locator">>,
+                               %% Quorum policies
+                               <<"dead-letter-strategy">>],
+      queue_arguments => [<<"x-max-length-bytes">>, <<"x-queue-type">>,
                           <<"x-max-age">>, <<"x-stream-max-segment-size-bytes">>,
                           <<"x-initial-cluster-size">>, <<"x-queue-leader-locator">>],
-      consumer_arguments => [<<"x-stream-offset">>],
+      consumer_arguments => [<<"x-stream-offset">>, <<"x-credit">>],
       server_named => false}.
 
 notify_decorators(Q) when ?is_amqqueue(Q) ->
@@ -999,48 +1036,6 @@ set_leader_pid(Pid, QName) ->
             ok
     end.
 
-apply_leader_locator_strategy(#{leader_locator_strategy := <<"client-local">>} = Conf) ->
-    Conf;
-apply_leader_locator_strategy(#{leader_node := Leader,
-                                replica_nodes := Replicas0,
-                                leader_locator_strategy := <<"random">>,
-                                name := StreamId} = Conf) ->
-    Replicas = [Leader | Replicas0],
-    ClusterSize = length(Replicas),
-    Hash = erlang:phash2(StreamId),
-    Pos = (Hash rem ClusterSize) + 1,
-    NewLeader = lists:nth(Pos, Replicas),
-    NewReplicas = lists:delete(NewLeader, Replicas),
-    Conf#{leader_node => NewLeader,
-          replica_nodes => NewReplicas};
-apply_leader_locator_strategy(#{leader_node := Leader,
-                                replica_nodes := Replicas0,
-                                leader_locator_strategy := <<"least-leaders">>} = Conf) ->
-    Replicas = [Leader | Replicas0],
-    Counters0 = maps:from_list([{R, 0} || R <- Replicas]),
-    Counters = maps:to_list(
-                 lists:foldl(fun(Q, Acc) ->
-                                     P = amqqueue:get_pid(Q),
-                                     case amqqueue:get_type(Q) of
-                                         ?MODULE when is_pid(P) ->
-                                             maps:update_with(node(P), fun(V) -> V + 1 end, 1, Acc);
-                                         _ ->
-                                             Acc
-                                     end
-                             end, Counters0, rabbit_amqqueue:list())),
-    Ordered = lists:sort(fun({_, V1}, {_, V2}) ->
-                                 V1 =< V2
-                         end, Counters),
-    %% We could have potentially introduced nodes that are not in the list of replicas if
-    %% initial cluster size is smaller than the cluster size. Let's select the first one
-    %% that is on the list of replicas
-    NewLeader = select_first_matching_node(Ordered, Replicas),
-    NewReplicas = lists:delete(NewLeader, Replicas),
-    Conf#{leader_node => NewLeader,
-          replica_nodes => NewReplicas}.
-
-select_first_matching_node([{N, _} | Rest], Replicas) ->
-    case lists:member(N, Replicas) of
-        true -> N;
-        false -> select_first_matching_node(Rest, Replicas)
-    end.
+close_log(undefined) -> ok;
+close_log(Log) ->
+    osiris_log:close(Log).

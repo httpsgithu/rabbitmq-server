@@ -2,7 +2,7 @@
 %% License, v. 2.0. If a copy of the MPL was not distributed with this
 %% file, You can obtain one at https://mozilla.org/MPL/2.0/.
 %%
-%% Copyright (c) 2007-2021 VMware, Inc. or its affiliates.  All rights reserved.
+%% Copyright (c) 2007-2022 VMware, Inc. or its affiliates.  All rights reserved.
 %%
 
 -module('Elixir.RabbitMQ.CLI.Ctl.Commands.ListStompConnectionsCommand').
@@ -10,15 +10,6 @@
 -include("rabbit_stomp.hrl").
 
 -behaviour('Elixir.RabbitMQ.CLI.CommandBehaviour').
-
--ignore_xref([
-    {'Elixir.RabbitMQ.CLI.DefaultOutput', output, 1},
-    {'Elixir.RabbitMQ.CLI.Core.Helpers', nodes_in_cluster, 1},
-    {'Elixir.RabbitMQ.CLI.Ctl.InfoKeys', prepare_info_keys, 1},
-    {'Elixir.RabbitMQ.CLI.Ctl.RpcStream', receive_list_items, 7},
-    {'Elixir.RabbitMQ.CLI.Ctl.InfoKeys', validate_info_keys, 2},
-    {'Elixir.Enum', join, 2}
-]).
 
 -export([formatter/0,
          scopes/0,

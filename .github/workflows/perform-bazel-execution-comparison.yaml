@@ -20,7 +20,7 @@ jobs:
     timeout-minutes: 120
     steps:
     - name: CHECKOUT REPOSITORY
-      uses: actions/checkout@v2.4.0
+      uses: actions/checkout@v3
     - name: CONFIGURE BAZEL
       run: |
         cat << EOF >> user.bazelrc
@@ -55,7 +55,7 @@ jobs:
     timeout-minutes: 120
     steps:
     - name: CHECKOUT REPOSITORY
-      uses: actions/checkout@v2.4.0
+      uses: actions/checkout@v3
     - name: CONFIGURE BAZEL
       run: |
         cat << EOF >> user.bazelrc
@@ -82,12 +82,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - name: CHECKOUT BAZEL
-      uses: actions/checkout@v2.4.0
+      uses: actions/checkout@v3
       with:
         repository: bazelbuild/bazel
         path: bazel
     - name: MOUNT BAZEL CACHE
-      uses: actions/cache@v2
+      uses: actions/cache@v3.0.7
       with:
         path: "/home/runner/.cache/bazel"
         key: bazel
@@ -96,7 +96,7 @@ jobs:
       run: |
         bazelisk build src/tools/execlog:parser
     - name: FETCH LOGS
-      uses: actions/download-artifact@v2
+      uses: actions/download-artifact@v3
     - name: PARSE LOGS
       run: |
         bazel/bazel-bin/src/tools/execlog/parser \

@@ -2,7 +2,7 @@
 %% License, v. 2.0. If a copy of the MPL was not distributed with this
 %% file, You can obtain one at https://mozilla.org/MPL/2.0/.
 %%
-%% Copyright (c) 2007-2021 VMware, Inc. or its affiliates.  All rights reserved.
+%% Copyright (c) 2007-2022 VMware, Inc. or its affiliates.  All rights reserved.
 %%
 
 -module(rabbit_ct_broker_helpers).
@@ -867,7 +867,7 @@ handle_nodes_in_parallel(NodeConfigs, Fun) ->
                          T2 = erlang:timestamp(),
                          ct:pal(
                            ?LOW_IMPORTANCE,
-                           "Time to run ~p for node ~s: ~b µs",
+                           "Time to run ~p for node ~s: ~b us",
                           [Fun,
                            ?config(nodename, NodeConfig),
                            timer:now_diff(T2, T1)]),
@@ -884,7 +884,7 @@ wait_for_node_handling([], Fun, T0, Results) ->
     T3 = erlang:timestamp(),
     ct:pal(
       ?LOW_IMPORTANCE,
-      "Time to run ~p for all nodes: ~b µs",
+      "Time to run ~p for all nodes: ~b us",
       [Fun, timer:now_diff(T3, T0)]),
     Results;
 wait_for_node_handling(Procs, Fun, T0, Results) ->
@@ -1288,10 +1288,8 @@ force_vhost_failure(Config, Node, VHost, Attempts) ->
                 exit:{exception, {shutdown, _}} ->
                     timer:sleep(300),
                     force_vhost_failure(Config, Node, VHost, Attempts - 1);
-                exit:{exception,
-                      {badmatch,
-                       {error,
-                        {vhost_supervisor_not_running, VHost}}}} ->
+                error:{badmatch,
+                       {error, {vhost_supervisor_not_running, VHost}}} ->
                     %% This badmatch may occur in get_message_store_pid/3 as a
                     %% result of `{ok, VHostSup} = rpc(...)`.
                     timer:sleep(300),

@@ -2,7 +2,7 @@
 %% License, v. 2.0. If a copy of the MPL was not distributed with this
 %% file, You can obtain one at https://mozilla.org/MPL/2.0/.
 %%
-%% Copyright (c) 2011-2021 VMware, Inc. or its affiliates.  All rights reserved.
+%% Copyright (c) 2011-2022 VMware, Inc. or its affiliates.  All rights reserved.
 %%
 
 -module(queue_length_limits_SUITE).
@@ -67,15 +67,10 @@ init_per_group(max_length_classic, Config) ->
       [{queue_args, [{<<"x-queue-type">>, longstr, <<"classic">>}]},
        {queue_durable, false}]);
 init_per_group(max_length_quorum, Config) ->
-    case rabbit_ct_broker_helpers:enable_feature_flag(Config, quorum_queue) of
-        ok ->
-            rabbit_ct_helpers:set_config(
-              Config,
-              [{queue_args, [{<<"x-queue-type">>, longstr, <<"quorum">>}]},
-               {queue_durable, true}]);
-        Skip ->
-            Skip
-    end;
+    rabbit_ct_helpers:set_config(
+      Config,
+      [{queue_args, [{<<"x-queue-type">>, longstr, <<"quorum">>}]},
+       {queue_durable, true}]);
 init_per_group(max_length_mirrored, Config) ->
     rabbit_ct_broker_helpers:set_ha_policy(Config, 0, <<"^max_length.*queue">>,
         <<"all">>, [{<<"ha-sync-mode">>, <<"automatic">>}]),

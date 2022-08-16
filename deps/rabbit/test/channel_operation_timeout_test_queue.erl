@@ -2,9 +2,10 @@
 %% License, v. 2.0. If a copy of the MPL was not distributed with this
 %% file, You can obtain one at https://mozilla.org/MPL/2.0/.
 %%
-%% Copyright (c) 2007-2021 VMware, Inc. or its affiliates.  All rights reserved.
+%% Copyright (c) 2007-2022 VMware, Inc. or its affiliates.  All rights reserved.
 %%
 
+%% @todo This module also needs to be updated when variable queue changes.
 -module(channel_operation_timeout_test_queue).
 
 -export([init/3, terminate/2, delete_and_terminate/2, delete_crashed/1,
@@ -17,6 +18,7 @@
          set_ram_duration_target/2, ram_duration/1, needs_timeout/1, timeout/1,
          handle_pre_hibernate/1, resume/1, msg_rates/1,
          info/2, invoke/3, is_duplicate/2, set_queue_mode/2,
+         set_queue_version/2,
          start/2, stop/1, zip_msgs_and_acks/4, handle_info/2]).
 
 %%----------------------------------------------------------------------------
@@ -36,10 +38,15 @@
           q3,
           q4,
           next_seq_id,
+          %% seq_id() of first undelivered message
+          %% everything before this seq_id() was delivered at least once
+          next_deliver_seq_id,
           ram_pending_ack,    %% msgs using store, still in RAM
           disk_pending_ack,   %% msgs in store, paged out
           qi_pending_ack,     %% msgs using qi, *can't* be paged out
+          index_mod,
           index_state,
+          store_state,
           msg_store_clients,
           durable,
           transient_threshold,
@@ -75,6 +82,7 @@
 
           %% default queue or lazy queue
           mode,
+          version = 1,
           %% number of reduce_memory_usage executions, once it
           %% reaches a threshold the queue will manually trigger a runtime GC
             %% see: maybe_execute_gc/1
@@ -93,7 +101,7 @@
           msg,
           is_persistent,
           is_delivered,
-          msg_in_store,
+          msg_location, %% ?IN_SHARED_STORE | ?IN_QUEUE_STORE | ?IN_QUEUE_INDEX | ?IN_MEMORY
           index_on_disk,
           persist_to,
           msg_props
@@ -205,6 +213,11 @@ delete_crashed(Q) ->
 
 purge(State = #vqstate { qi_pending_ack= QPA }) ->
     maybe_delay(QPA),
+    rabbit_variable_queue:purge(State);
+%% For v3.9.x and below because the state has changed.
+purge(State) ->
+    QPA = element(10, State),
+    maybe_delay(QPA),
     rabbit_variable_queue:purge(State).
 
 purge_acks(State) ->
@@ -244,6 +257,11 @@ ack(List, State) ->
 
 requeue(AckTags, #vqstate { qi_pending_ack = QPA } = State) ->
     maybe_delay(QPA),
+    rabbit_variable_queue:requeue(AckTags, State);
+%% For v3.9.x and below because the state has changed.
+requeue(AckTags, State) ->
+    QPA = element(10, State),
+    maybe_delay(QPA),
     rabbit_variable_queue:requeue(AckTags, State).
 
 ackfold(MsgFun, Acc, State, AckTags) ->
@@ -253,6 +271,11 @@ fold(Fun, Acc, State) ->
     rabbit_variable_queue:fold(Fun, Acc, State).
 
 len(#vqstate { qi_pending_ack = QPA } = State) ->
+    maybe_delay(QPA),
+    rabbit_variable_queue:len(State);
+%% For v3.9.x and below because the state has changed.
+len(State) ->
+    QPA = element(10, State),
     maybe_delay(QPA),
     rabbit_variable_queue:len(State).
 
@@ -293,6 +316,9 @@ is_duplicate(Msg, State) -> rabbit_variable_queue:is_duplicate(Msg, State).
 
 set_queue_mode(Mode, State) ->
     rabbit_variable_queue:set_queue_mode(Mode, State).
+
+set_queue_version(Version, State) ->
+    rabbit_variable_queue:set_queue_version(Version, State).
 
 zip_msgs_and_acks(Msgs, AckTags, Accumulator, State) ->
     rabbit_variable_queue:zip_msgs_and_acks(Msgs, AckTags, Accumulator, State).

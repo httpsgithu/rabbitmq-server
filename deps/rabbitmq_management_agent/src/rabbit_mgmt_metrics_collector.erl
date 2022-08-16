@@ -2,7 +2,7 @@
 %% License, v. 2.0. If a copy of the MPL was not distributed with this
 %% file, You can obtain one at https://mozilla.org/MPL/2.0/.
 %%
-%% Copyright (c) 2007-2021 VMware, Inc. or its affiliates.  All rights reserved.
+%% Copyright (c) 2007-2022 VMware, Inc. or its affiliates.  All rights reserved.
 %%
 -module(rabbit_mgmt_metrics_collector).
 
@@ -70,13 +70,13 @@ init([Table]) ->
                             proplists:get_value(global, Policies)},
                 rates_mode = RatesMode,
                 old_aggr_stats = #{},
-                lookup_queue = fun queue_exists/1,
-                lookup_exchange = fun exchange_exists/1,
+                lookup_queue = fun rabbit_amqqueue:exists/1,
+                lookup_exchange = fun rabbit_exchange:exists/1,
                 filter_aggregated_queue_metrics_pattern = FilterPattern}}.
 
 handle_call(reset_lookups, _From, State) ->
-    {reply, ok, State#state{lookup_queue = fun queue_exists/1,
-                            lookup_exchange = fun exchange_exists/1}};
+    {reply, ok, State#state{lookup_queue = fun rabbit_amqqueue:exists/1,
+                            lookup_exchange = fun rabbit_exchange:exists/1}};
 handle_call({override_lookups, Lookups}, _From, State) ->
     {reply, ok, State#state{lookup_queue = pget(queue, Lookups),
                             lookup_exchange = pget(exchange, Lookups)}};
@@ -511,10 +511,9 @@ aggregate_entry({Id, Metrics}, NextStats, Ops0,
                pget(io_reopen_count, Metrics, 0), pget(mnesia_ram_tx_count, Metrics, 0),
                pget(mnesia_disk_tx_count, Metrics, 0), pget(msg_store_read_count, Metrics, 0),
                pget(msg_store_write_count, Metrics, 0),
-               pget(queue_index_journal_write_count, Metrics, 0),
+               0,
                pget(queue_index_write_count, Metrics, 0), pget(queue_index_read_count, Metrics, 0),
-               pget(io_file_handle_open_attempt_count, Metrics, 0),
-               pget(io_file_handle_open_attempt_time, Metrics, 0)),
+               0, 0),
     Ops = insert_entry_ops(node_persister_stats, Id, false, Stats, Ops0,
                            GPolicies),
     {NextStats, Ops, State};
@@ -650,22 +649,6 @@ vhost({queue_stats, #resource{virtual_host = VHost}}) ->
     VHost;
 vhost({TName, Pid}) ->
     pget(vhost, lookup_element(TName, Pid, 2)).
-
-exchange_exists(Name) ->
-    case rabbit_exchange:lookup(Name) of
-        {ok, _} ->
-            true;
-        _ ->
-            false
-    end.
-
-queue_exists(Name) ->
-    case rabbit_amqqueue:lookup(Name) of
-        {ok, _} ->
-            true;
-        _ ->
-            false
-    end.
 
 insert_with_index(Table, Key, Tuple) ->
     Insert = ets:insert(Table, Tuple),

@@ -1,9 +1,12 @@
-load("@bazel-erlang//:erlang_home.bzl", "ErlangHomeProvider")
+load(
+    "@rules_erlang//tools:erlang_toolchain.bzl",
+    "erlang_dirs",
+)
 
 def _impl(ctx):
     out = ctx.actions.declare_file(ctx.label.name)
 
-    erlang_home = ctx.attr._erlang_home[ErlangHomeProvider].path
+    (erlang_home, _, _) = erlang_dirs(ctx)
 
     ctx.actions.write(
         output = out,
@@ -15,7 +18,9 @@ deps_dirs:
   - bazel-bin/external/*
 include_dirs:
   - deps
+  - deps/*
   - deps/*/include
+  - deps/*/src
   - bazel-bin/external
   - bazel-bin/external/*/include
 plt_path: bazel-bin/deps/rabbit/.base_plt.plt
@@ -30,7 +35,7 @@ plt_path: bazel-bin/deps/rabbit/.base_plt.plt
 
 erlang_ls_config = rule(
     implementation = _impl,
-    attrs = {
-        "_erlang_home": attr.label(default = "@bazel-erlang//:erlang_home"),
-    },
+    toolchains = [
+        "@rules_erlang//tools:toolchain_type",
+    ],
 )
